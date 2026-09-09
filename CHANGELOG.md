@@ -13,7 +13,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - PRD and DESIGN documents under `docs/`.
 - `--dry-run` mode using a no-op backlight backend.
 - Unit tests for configuration and the controller state machine.
-- `scripts/build.ps1` to produce a one-file, no-console executable with PyInstaller.
+- `scripts/build.ps1` now produces two one-file executables: `asus-kbd-backlight.exe`
+  (no console, for autostart) and `asus-kbd-backlight-debug.exe` (console + live log).
+- Logging to stderr and to a rotating file at
+  `%APPDATA%\asus-kbd-backlight\asus-kbd-backlight.log`; `--debug` for verbose output.
+- Startup warning when not running elevated; repeated backlight failures are
+  logged once instead of every poll.
+- Console control handler so Ctrl+C / Ctrl+Break / closing the window shuts the
+  hook down cleanly.
 
 ### Fixed
 - `hook.install()` raised `OSError [WinError 126]` (notably in the frozen
