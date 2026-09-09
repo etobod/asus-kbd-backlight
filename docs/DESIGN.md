@@ -42,6 +42,16 @@ Three threads are in play:
 
 ## Key decisions
 
+### `DEVS` Control_status carries an enable bit
+
+Keyboard backlight is set with `DEVS(0x00050021, 0x80 | level)`. A bare
+`level` (0..3) only writes the level register: a subsequent read reports the
+new value but the illumination never engages (the EC drops it). Bit 7 marks
+the write as "apply now". Same convention as the Linux `asus-wmi` driver
+(`ctrl_param = 0x80 | value`) and G-Helper (`brightness | 0x80`). The method
+is called via `ExecMethod_` on the instance from `ExecQuery`, not on the class
+object (which WMI rejects), with `Device_ID` / `Control_status` set by name.
+
 ### No state read-back (FR-1, R-3)
 
 `DSTS` is unreliable across firmware revisions, so the tool never queries the
