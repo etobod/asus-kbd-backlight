@@ -4,6 +4,18 @@ Keyboard-only idle timeout for the keyboard backlight on ASUS laptops.
 
 The backlight turns on when you type and turns off a few seconds after you stop. Moving the mouse or touching the touchpad does **not** wake it.
 
+---
+
+> # ⚠️ REQUIRED: TURN OFF "TURN OFF BACKLIGHT AFTER …" IN ARMOURY CRATE
+>
+> **Armoury Crate → Lighting → Advanced Settings → disable "Turn off backlight after (Battery / AC)".**
+>
+> While that option is on, Armoury Crate runs its own idle timer and **re‑lights the keyboard on any input, including mouse and touchpad**, the moment its countdown expires — it will fight this tool and you will get flicker or a keyboard that lights up when you move the mouse.
+>
+> With it **off**, Armoury Crate stops managing the backlight entirely and this tool has sole control. Do the same in G‑Helper if you use it, or just close both.
+
+---
+
 ## Why this exists
 
 ASUS laptops expose only four backlight steps: 0% / 33% / 66% / 100%. The 33% minimum is a firmware default and, per ASUS support, cannot be lowered further in static mode. In a dark room it is too bright.
@@ -42,7 +54,7 @@ Your antivirus may still flag the hook. That is a reasonable heuristic doing its
 - Python 3.10+
 - ASUS System Control Interface driver installed
 - **Administrator privileges.** Required twice over: writing through ATKACPI needs elevation, and an unelevated hook cannot see keys typed into elevated windows, so the backlight would stay dark while you work in an admin console.
-- Backlight management turned **off** in Armoury Crate and G-Helper, otherwise they will fight this tool for the same state.
+- **"Turn off backlight after …" disabled in Armoury Crate** (Lighting → Advanced Settings), and any equivalent in G-Helper. See the callout at the top — this is not optional. While Armoury Crate's idle timer is on, it re-lights the keyboard on mouse/touchpad input and fights this tool for the same state.
 
 ## Install
 
