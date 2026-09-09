@@ -29,6 +29,12 @@ LEVEL_MID = 2  # 66%
 LEVEL_MAX = 3  # 100%
 _VALID_LEVELS = (LEVEL_OFF, LEVEL_MIN, LEVEL_MID, LEVEL_MAX)
 
+# Control_status must have bit 7 set for the change to actually engage the
+# illumination; sending a bare 0..3 only writes the level register (a readback
+# then reports the new level) while the backlight stays dark. This matches the
+# Linux asus-wmi driver (ctrl_param = 0x80 | value) and G-Helper (brightness | 0x80).
+_KBD_BACKLIGHT_SET = 0x80
+
 
 class BacklightError(RuntimeError):
     """A hardware communication failure while setting brightness (NFR-4)."""
@@ -91,12 +97,14 @@ class WmiBacklight:
         if level not in _VALID_LEVELS:
             raise ValueError(f"level must be 0-3, got {level!r}")
 
+        control_status = _KBD_BACKLIGHT_SET | level
+
         _co_initialize()
         instance, devs = self._bind()
         try:
             params = devs.InParameters.SpawnInstance_()
             params.Properties_.Item("Device_ID").Value = self.device_id
-            params.Properties_.Item("Control_status").Value = level
+            params.Properties_.Item("Control_status").Value = control_status
             out = instance.ExecMethod_("DEVS", params)
             result = out.Properties_.Item("result").Value
         except Exception as exc:  # noqa: BLE001
@@ -104,9 +112,11 @@ class WmiBacklight:
             if "parameter" in str(exc).lower():
                 hint = " - run this program as Administrator"
             raise BacklightError(
-                f"DEVS({self.device_id:#010x}, {level}) failed: {exc}{hint}"
+                f"DEVS({self.device_id:#010x}, {control_status:#04x}) failed: {exc}{hint}"
             ) from exc
-        _log.info("DEVS(%#010x, %d) -> %s", self.device_id, level, result)
+        _log.info(
+            "DEVS(%#010x, %#04x) -> %s  [level %d]", self.device_id, control_status, result, level
+        )
 
 
 class NullBacklight:
