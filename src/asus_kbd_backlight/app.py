@@ -67,20 +67,22 @@ class Controller:
         self._apply(on=idle_for < self._cfg.timeout)
 
     def _run(self) -> None:
+        # Every backlight/COM call happens on this one thread. The first tick
+        # sees last_key == 0.0, so it immediately drives the backlight off
+        # (FR-1); the last one restores the off state before we exit (FR-6).
         while not self._stop.is_set():
             self.tick()
             self._stop.wait(POLL_INTERVAL)
+        self._apply(on=False)
 
     def start(self) -> None:
         self._hook.install()          # must happen on the message-pump thread
         log.info("keyboard hook installed")
-        self._apply(on=False)          # FR-1: known-off at startup
         self._worker.start()
 
     def stop(self) -> None:
         self._stop.set()
-        self._worker.join(timeout=1.0)
-        self._apply(on=False)
+        self._worker.join(timeout=2.0)
         self._hook.uninstall()        # FR-6: hand keyboard control back to the system
         log.info("stopped, keyboard hook removed")
 
@@ -150,6 +152,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--dry-run", action="store_true", help="run the logic without touching hardware")
     p.add_argument("--debug", action="store_true", help="verbose logging")
+    p.add_argument(
+        "--set", type=int, choices=(0, 1, 2, 3), default=None, metavar="LEVEL",
+        help="set backlight to LEVEL and exit (probe device_id / level mapping)",
+    )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args(argv)
 
@@ -171,6 +177,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not args.dry_run and not _is_admin():
         log.warning("not running as Administrator - backlight control will be denied (see README)")
+
+    if args.set is not None:
+        backlight = get_backlight(cfg.device_id, dry_run=args.dry_run)
+        try:
+            backlight.set_level(args.set)
+        except BacklightError as exc:
+            log.error("%s", exc)
+            return 1
+        log.info("set level %d - done", args.set)
+        return 0
 
     controller = Controller(cfg, dry_run=args.dry_run)
     _ctrl_cb = None
