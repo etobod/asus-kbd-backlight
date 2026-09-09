@@ -68,7 +68,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="asus-kbd-backlight", description=__doc__)
     p.add_argument("--config", type=Path, default=None, help="path to config.toml")
     p.add_argument("--timeout", type=float, default=None, help="override idle timeout (s)")
-    p.add_argument("--on-level", type=int, choices=(1, 2, 3), default=None, help="override brightness")
+    p.add_argument(
+        "--on-level", type=int, choices=(1, 2, 3), default=None, help="override brightness"
+    )
     p.add_argument("--dry-run", action="store_true", help="run the logic without touching hardware")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args(argv)
