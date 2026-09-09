@@ -9,9 +9,12 @@ labels: model-report
 
 **BIOS version:**
 
-**EC check** (README → "Before you invest time"):
-- [ ] Backlight stayed dark when tapping the touchpad (good)
-- [ ] Backlight lit up on touchpad tap — EC-driven, tool cannot work
+**"Turn off backlight after …" disabled in Armoury Crate?** yes / no
+
+**Behaviour:**
+- [ ] `--set 3` reaches level 3 and the backlight stays on
+- [ ] backlight lights on typing and turns off after the timeout
+- [ ] backlight briefly lights then drops / won't hold — does not work here
 
 **If it works — what values:**
 - `device_id`:

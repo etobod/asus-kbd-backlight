@@ -21,10 +21,11 @@ pytest -q
 
 ## Trying it on real hardware
 
-Run the EC check in the README first. Then:
+Disable "Turn off backlight after …" in Armoury Crate first (see the README).
+Then, from an elevated shell:
 
 ```powershell
-# from an elevated shell
+python -m asus_kbd_backlight --set 3     # probe: does the backlight reach level 3 and stay?
 python -m asus_kbd_backlight --dry-run   # logic only, backlight untouched
 python -m asus_kbd_backlight             # live
 ```
@@ -32,7 +33,7 @@ python -m asus_kbd_backlight             # live
 ## Reporting a model
 
 Open an issue using the **Model report** template, or a PR adding a row to the
-verified-models table in `README.md`. Negative results (EC wakes the backlight,
+verified-models table in `README.md`. Negative results (backlight won't hold,
 different `device_id`, different level mapping) are wanted too.
 
 ## Privacy-sensitive code

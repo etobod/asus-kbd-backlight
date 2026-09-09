@@ -85,29 +85,12 @@ The ACPI endpoint and level mapping are not guaranteed to be identical across th
 - exact model string (`wmic csproduct get name`, or Settings → System → About)
 - BIOS version
 - the `device_id` and level mapping that worked
-- whether the EC check below passed or failed
 
-Negative results are just as useful as positive ones. A row saying *"Zenbook S16 — EC wakes backlight, does not work"* saves the next person an evening.
+Negative results are just as useful as positive ones. A row saying *"Zenbook S16 — firmware re-lights the backlight, does not work"* saves the next person an evening.
 
 ### Known to have the underlying brightness problem, not yet verified with this tool
 
 Reported by users in ASUS and G-Helper forum threads: Zenbook S14, Zenbook S16 (2024), ProArt P16 (2024), some ROG Strix models. These are listed as leads for testing, not as supported hardware.
-
-## Before you invest time: the EC check
-
-There is one way this project can fail completely, and it costs two minutes to rule out.
-
-If the backlight is woken by the embedded controller rather than by a software layer, no user-space program can hold it off — this tool will turn the light off and firmware will turn it straight back on, and you will get flicker instead of working logic.
-
-To check:
-
-1. Close Armoury Crate and G-Helper entirely.
-2. Turn the backlight off with Fn+↓.
-3. Tap the touchpad.
-
-If the backlight lights up: the EC is doing it, and this tool will not work on your machine. Please still open an issue with your model — that is a valuable negative result.
-
-If it stays dark: you are fine, carry on.
 
 ## Going below 33%
 
