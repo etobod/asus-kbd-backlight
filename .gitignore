@@ -28,3 +28,7 @@ Thumbs.db
 
 # Local runtime config (real config lives in %APPDATA%\asus-kbd-backlight)
 config.local.toml
+
+# Compiled binary (built locally via scripts\build.ps1, not committed)
+/asus-kbd-backlight.exe
+*.exe
