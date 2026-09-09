@@ -23,9 +23,15 @@ _HOOKPROC = ctypes.CFUNCTYPE(
     ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
 )
 
+# Without an explicit restype ctypes assumes c_int (32-bit) and truncates the
+# 64-bit handle these return, which yields an invalid hMod and makes
+# SetWindowsHookExW fail with ERROR_MOD_NOT_FOUND (126).
+_kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+_kernel32.GetModuleHandleW.argtypes = (wintypes.LPCWSTR,)
+
 _user32.SetWindowsHookExW.restype = wintypes.HHOOK
 _user32.SetWindowsHookExW.argtypes = (
-    ctypes.c_int, _HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD,
+    ctypes.c_int, _HOOKPROC, wintypes.HMODULE, wintypes.DWORD,
 )
 _user32.CallNextHookEx.restype = wintypes.LPARAM
 _user32.CallNextHookEx.argtypes = (
@@ -56,11 +62,18 @@ class KeyboardIdleHook:
     def install(self) -> None:
         if self._handle is not None:
             return
-        module = _kernel32.GetModuleHandleW(None)
-        handle = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, module, 0)
-        if not handle:
-            raise ctypes.WinError(ctypes.get_last_error())
-        self._handle = handle
+        # WH_KEYBOARD_LL may be installed with a NULL module handle when the
+        # callback lives in the current process (which a ctypes trampoline
+        # does). Fall back to the real module handle for older systems that
+        # still demand one.
+        last_err = 0
+        for module in (None, _kernel32.GetModuleHandleW(None)):
+            handle = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, module, 0)
+            if handle:
+                self._handle = handle
+                return
+            last_err = ctypes.get_last_error()
+        raise ctypes.WinError(last_err)
 
     def uninstall(self) -> None:
         if self._handle is None:
