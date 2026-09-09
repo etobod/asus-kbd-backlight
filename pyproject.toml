@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asus-kbd-backlight"
+version = "0.1.0"
+description = "Keyboard-only idle timeout for the keyboard backlight on ASUS laptops."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["asus", "keyboard", "backlight", "windows", "acpi", "wmi"]
+authors = [{ name = "asus-kbd-backlight contributors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "pywin32>=306; sys_platform == 'win32'",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+asus-kbd-backlight = "asus_kbd_backlight.app:main"
+
+[project.urls]
+Homepage = "https://github.com/t22901341/asus-kbd-backlight"
+Issues = "https://github.com/t22901341/asus-kbd-backlight/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

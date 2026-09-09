@@ -1,0 +1,12 @@
+# Copy to %APPDATA%\asus-kbd-backlight\config.toml and edit.
+# Every key is optional; omitted keys use the default shown.
+
+# Seconds of keyboard idleness before the backlight turns off.
+timeout = 3.0
+
+# Brightness while typing: 1 = 33%, 2 = 66%, 3 = 100%.
+on_level = 1
+
+# ASUS ACPI endpoint for backlight brightness. Change only if your model
+# differs (see the verified-models table in the README). Hex string or int.
+device_id = "0x00050021"

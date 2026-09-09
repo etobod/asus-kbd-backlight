@@ -1,0 +1,50 @@
+import textwrap
+
+import pytest
+
+from asus_kbd_backlight import config
+
+
+def test_defaults_when_file_missing(tmp_path):
+    cfg = config.load(tmp_path / "nope.toml")
+    assert cfg.timeout == config.DEFAULT_TIMEOUT
+    assert cfg.on_level == config.DEFAULT_ON_LEVEL
+    assert cfg.device_id == config.DEFAULT_DEVICE_ID
+
+
+def test_overrides_from_file(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        textwrap.dedent(
+            """
+            timeout = 5.0
+            on_level = 2
+            device_id = "0x00050021"
+            """
+        )
+    )
+    cfg = config.load(path)
+    assert cfg.timeout == 5.0
+    assert cfg.on_level == 2
+    assert cfg.device_id == 0x00050021
+
+
+def test_device_id_accepts_int(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("device_id = 327713\n")  # 0x00050021
+    assert config.load(path).device_id == 0x00050021
+
+
+@pytest.mark.parametrize("body", ["timeout = 0", "timeout = -1", "on_level = 0", "on_level = 4"])
+def test_invalid_values_rejected(tmp_path, body):
+    path = tmp_path / "config.toml"
+    path.write_text(body + "\n")
+    with pytest.raises(ValueError):
+        config.load(path)
+
+
+def test_default_path_uses_appdata(monkeypatch):
+    monkeypatch.setenv("APPDATA", r"C:\Users\test\AppData\Roaming")
+    p = config.default_config_path()
+    assert p.name == "config.toml"
+    assert p.parent.name == "asus-kbd-backlight"

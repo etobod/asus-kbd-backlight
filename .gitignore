@@ -1,0 +1,30 @@
+# Local-only Claude Code guidance — keep on this machine, don't commit
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local runtime config (real config lives in %APPDATA%\asus-kbd-backlight)
+config.local.toml
