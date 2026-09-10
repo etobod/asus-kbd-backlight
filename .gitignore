@@ -3,7 +3,6 @@ CLAUDE.md
 .claude/agents/
 .claude/skills/
 
-# /loc-planning working area (build.ps1 stays tracked; new scripts need `git add -f`)
 /plan/
 /scripts/
 
