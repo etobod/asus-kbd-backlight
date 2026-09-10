@@ -1,5 +1,7 @@
 # Local-only Claude Code guidance — keep on this machine, don't commit
 CLAUDE.md
+.claude/agents/
+.claude/skills/
 
 # Python
 __pycache__/
