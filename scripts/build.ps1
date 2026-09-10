@@ -8,18 +8,28 @@
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-# Resolve a Python interpreter without assuming it is on PATH.
+# Resolve a Python interpreter without assuming it is on PATH, and skip the
+# Microsoft Store "App execution alias" stub under WindowsApps (it prints
+# "Python was not found" and exits 0, which would make every build a silent no-op).
+function Test-RealPython($exe) {
+    if (-not $exe) { return $false }
+    try { & $exe -c "import sys" 2>$null } catch { return $false }
+    return ($LASTEXITCODE -eq 0)
+}
+
 $py = $null
-foreach ($c in "python", "python3") {
-    $cmd = Get-Command $c -ErrorAction SilentlyContinue
-    if ($cmd) { $py = $cmd.Source; break }
+$candidates = @(
+    "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+    "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
+)
+foreach ($name in "py", "python3", "python") {
+    $src = (Get-Command $name -ErrorAction SilentlyContinue).Source
+    if ($src -and $src -notmatch '\\WindowsApps\\') { $candidates += $src }
 }
-if (-not $py -and (Get-Command py -ErrorAction SilentlyContinue)) { $py = "py" }
-if (-not $py) {
-    $guess = "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe"
-    if (Test-Path $guess) { $py = $guess }
+foreach ($c in $candidates) {
+    if ((Test-Path $c) -and (Test-RealPython $c)) { $py = $c; break }
 }
-if (-not $py) { throw "No Python interpreter found (tried python, python3, py, and the default install path)." }
+if (-not $py) { throw "No usable Python interpreter found (Store alias stubs are ignored)." }
 Write-Host "Using interpreter: $py"
 
 $common = @(
