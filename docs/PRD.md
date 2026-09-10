@@ -97,7 +97,14 @@ As a user, I want the program to sit in the notification area with no window, so
 ### FR-9 — Settings window
 As a user, I want a small settings window reachable from the tray, so that I can change the behaviour without opening a config file.
 
-*Acceptance:* the window has exactly two controls — "Keep the backlight on for **[N]** seconds after the last keystroke" (integer, 1–60) and "Brightness while typing" (**33% / 66% / 100%**). **Save** writes the config and applies it live (FR-11); **Cancel** or closing the window discards changes and returns to the tray without quitting the daemon. Out-of-range input is rejected inline with a message; Save stays disabled until the input is valid. Opening Settings twice focuses the existing window rather than opening a second.
+*Acceptance:* the window has:
+
+- "Keep the backlight on for **[N]** seconds after the last keystroke" — integer, 1–60.
+- "Brightness while typing" — **33% / 66% / 100%**.
+- "**Start with Windows**" — checkbox, **on by default** (see FR-12).
+- The version number (e.g. `v0.2.0`), shown read-only in a corner / footer.
+
+**Save** writes the config and applies it live (FR-11); **Cancel** or closing the window discards changes and returns to the tray without quitting the daemon. Out-of-range input is rejected inline with a message; Save stays disabled until the input is valid. Opening Settings twice focuses the existing window rather than opening a second.
 
 ### FR-10 — Application icon
 As a user, I want the program to have its own recognisable icon, so that I can spot it in the tray, Task Manager and Task Scheduler.
@@ -108,6 +115,11 @@ As a user, I want the program to have its own recognisable icon, so that I can s
 As a user, I want a changed setting to take effect straight away, so that I can tune the timeout and feel the result without restarting anything.
 
 *Acceptance:* saving in the settings window changes the running behaviour within 1 s, with no restart, no visible flicker and no dropped keystrokes. The config file remains the single source of truth; editing it by hand while the daemon runs is picked up the same way.
+
+### FR-12 — Start with Windows
+As a user, I want the app to start automatically when I log in, on by default, so that the backlight behaves the way I set it without me launching anything.
+
+*Acceptance:* a config key `autostart` (default `true`). While `true`, a Task Scheduler entry exists that launches the app **elevated, at logon, with no UAC prompt** (*Run with highest privileges*); while `false`, that entry is absent. The setting is toggled from the settings window (FR-9) but the actual task is created/removed by the **already-elevated daemon** when it sees the key change (the settings window stays unelevated, NFR-5). On first run with no config file, the daemon registers the task once; uninstalling is `autostart = false` (or removing the task by hand, which the daemon then respects on next start).
 
 ## 7. Non-functional requirements
 
@@ -151,8 +163,9 @@ As a user, I want a changed setting to take effect straight away, so that I can 
 5. Should modifier keys pressed alone (Shift, Ctrl) wake the backlight?
 6. Should **Pause** (FR-8) persist across restarts, or always start running?
 7. Should the settings window expose `device_id` under an "Advanced" toggle, or keep it file-only?
-8. Should there be a "Start with Windows" checkbox that writes the Task Scheduler entry, or is that left to a documented manual step / helper script?
+8. ~~Should there be a "Start with Windows" checkbox?~~ **Resolved:** yes, checkbox in the settings window, on by default; the elevated daemon reconciles the Task Scheduler entry from the `autostart` key (FR-12).
 9. Two icon files (running / paused) or one icon with a drawn overlay?
+10. Should first-run auto-registering the autostart task (FR-12) show a one-time notification, or happen silently?
 
 ## 11. Out of scope for v0.2, worth revisiting
 
@@ -188,6 +201,13 @@ Format: *As a … I want … so that …*, with the acceptance criteria on the m
 - As a user who fat-fingered `600` into the seconds box, I want the window to stop me with a clear message instead of saving a useless value.
 - As a user, I want closing the settings window to leave the app running in the tray, so that I don't accidentally kill it by clicking the X.
 - As a user who prefers editing text files, I want hand-edits to `config.toml` to be picked up while the app runs, so that the GUI and the file never disagree.
+- As a user, I want the settings window to show the version number, so that when I report a problem I can say which build I'm on without hunting for it.
+
+**Start with Windows (FR-12)**
+
+- As a user who set this up once, I want it to just be there after every reboot without me doing anything, so that the backlight always behaves the way I configured it — this is why the checkbox is on by default.
+- As a user who wants it off, I want to untick "Start with Windows" and Save, so that it no longer launches at logon — and I don't want a UAC prompt just to change a checkbox.
+- As a cautious user, I want "on by default" to still be one visible, reversible checkbox rather than something hidden, so that I can see what it's doing and turn it off.
 
 ## 13. v0.2 UI — implementation plan
 
@@ -212,20 +232,30 @@ Two processes:
 ### FR-9 / FR-11 — settings + live apply
 
 - Tray "Settings" → `subprocess.Popen([exe_or_python, "--settings", "--no-elevate"])`. A named mutex (`AKB_SETTINGS_SINGLETON`) makes a second launch focus the first window instead of opening another.
-- Dialog (`app_settings.py`, ~120 lines, `tkinter`): `config.load()` → a `Spinbox` (1–60) bound to `timeout` and a `ttk.Combobox` of `33% / 66% / 100%` mapped to `on_level` 1/2/3. Validation on `<KeyRelease>`; Save disabled while invalid. Save → `config.save(Config(timeout, on_level, device_id))` → close. Cancel / window‑close → exit with no write.
-- `config.save(cfg, path=None)`: new function. Serialise the three keys (via `tomli-w`, new dep, or a 6-line hand-writer), write to `config.toml.tmp`, `os.replace` onto `config.toml` (atomic).
+- Dialog (`app_settings.py`, ~140 lines, `tkinter`): `config.load()` → a `Spinbox` (1–60) bound to `timeout`, a `ttk.Combobox` of `33% / 66% / 100%` mapped to `on_level` 1/2/3, a `Checkbutton` bound to `autostart`, and a read-only `ttk.Label` showing `f"v{__version__}"` in the footer. Validation on `<KeyRelease>`; Save disabled while invalid. Save → `config.save(Config(timeout, on_level, device_id, autostart))` → close. Cancel / window‑close → exit with no write.
+- `config.save(cfg, path=None)`: new function. `Config` gains `autostart: bool = True`. Serialise the keys (via `tomli-w`, new dep, or a short hand-writer), write to `config.toml.tmp`, `os.replace` onto `config.toml` (atomic).
 - Live reload: the worker loop already ticks every 50 ms; every ~1 s it also compares `config.toml`'s `st_mtime`/`st_size` to the last seen values and, on change, `config.load()` + swaps `Controller._cfg` under a `Lock`. No hook or COM churn (FR-11, NFR-6). A malformed file on reload is logged and the previous config kept.
+
+### FR-12 — start with Windows
+
+- `Config.autostart` (bool, default `True`). The **daemon** owns the Task Scheduler entry, because it is already elevated (NFR-5 keeps the settings window out of it).
+- On startup and on every live config reload, the daemon calls `autostart.reconcile(cfg.autostart)`:
+  - task name `asus-kbd-backlight`, action = the current executable path (`sys.executable` frozen, else `pythonw -m asus_kbd_backlight`), trigger = *At log on* of the current user, `RunLevel = HIGHEST` (no logon-time UAC prompt), settings: don't stop on battery, allow start on battery.
+  - `cfg.autostart and not task_exists()` → create it; `not cfg.autostart and task_exists()` → delete it; otherwise, if it exists, refresh the action path (survives moving the exe).
+- Implementation: Task Scheduler COM (`win32com.client.Dispatch("Schedule.Service")`) — no dependency beyond pywin32, no `schtasks.exe` string-quoting. A `--install-task` / `--uninstall-task` CLI wraps the same code for manual use and for `scripts/`.
+- First run, no config file: `config.load()` returns defaults with `autostart=True`, the daemon writes the file (so the checkbox state is visible) and registers the task once. Open question 10 covers whether to also show a one-time tray balloon.
 
 ### Packaging
 
 - `pyproject.toml`: add `tomli-w` (config write). `tkinter` is stdlib. `pywin32` already present.
 - `scripts/build.ps1`: add `--icon assets/icon.ico`, `--uac-admin`, `--add-data "assets;assets"`. The `noconsole` build becomes the single user artifact; `--debug` / `--settings` are flags on it. Keep a `--console` debug build without `--uac-admin` for troubleshooting.
 - New: `scripts/make-icon.ps1` (or a committed `assets/icon.ico`) — generate the multi-res `.ico` from `assets/icon.svg` (ImageMagick / Inkscape). Design brief: a single backlit keycap with a soft glow; the paused variant desaturated.
-- Optional `scripts/install-task.ps1`: registers the Task Scheduler entry (*Run with highest privileges*, at logon) — the supported autostart (R-8).
+- Autostart is handled in-process (FR-12); the `--install-task` / `--uninstall-task` CLI is what `scripts/` and power users call.
 
 ### Rollout order
 
 1. `assets/icon.ico` + `--icon` + `--uac-admin` — "double-click just works" (FR-7, FR-10 partial).
 2. Tray window + menu + Pause / Resume / Quit on the existing loop (FR-8).
-3. `config.save` + `--settings` dialog + file-watch live reload (FR-9, FR-11).
-4. Paused-state icon + live tooltip, `TaskbarCreated` recovery (FR-10 complete, NFR-7).
+3. `config.save` (+ `autostart` field) + `--settings` dialog (seconds, brightness, autostart checkbox, version label) + file-watch live reload (FR-9, FR-11).
+4. `autostart.reconcile` via Task Scheduler COM, wired to startup and config reload (FR-12).
+5. Paused-state icon + live tooltip, `TaskbarCreated` recovery (FR-10 complete, NFR-7).

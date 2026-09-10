@@ -7,6 +7,10 @@ timeout = 3.0
 # Brightness while typing: 1 = 33%, 2 = 66%, 3 = 100%.
 on_level = 1
 
+# Start automatically at logon (elevated, via a Task Scheduler entry the app
+# manages itself). On by default. v0.2+.
+autostart = true
+
 # ASUS ACPI endpoint for backlight brightness. Change only if your model
 # differs (see the verified-models table in the README). Hex string or int.
 device_id = "0x00050021"
