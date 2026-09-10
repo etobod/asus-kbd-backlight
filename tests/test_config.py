@@ -48,3 +48,39 @@ def test_default_path_uses_appdata(monkeypatch):
     p = config.default_config_path()
     assert p.name == "config.toml"
     assert p.parent.name == "asus-kbd-backlight"
+
+
+def test_device_id_bare_hex_without_0x(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('device_id = "00050021"\n')  # zero-padded, no 0x, meant as hex
+    assert config.load(path).device_id == 0x00050021
+
+
+def test_device_id_garbage_raises(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('device_id = "not-a-number"\n')
+    with pytest.raises(ValueError, match="device_id"):
+        config.load(path)
+
+
+def test_timeout_non_numeric_raises(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('timeout = "soon"\n')
+    with pytest.raises(ValueError, match="timeout"):
+        config.load(path)
+
+
+def test_on_level_float_rejected(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("on_level = 2.9\n")
+    with pytest.raises(ValueError, match="on_level"):
+        config.load(path)
+
+
+def test_unknown_key_warns_but_loads(tmp_path, caplog):
+    path = tmp_path / "config.toml"
+    path.write_text("timeout = 4\nfrobnicate = true\n")
+    with caplog.at_level("WARNING"):
+        cfg = config.load(path)
+    assert cfg.timeout == 4.0
+    assert any("frobnicate" in r.message for r in caplog.records)

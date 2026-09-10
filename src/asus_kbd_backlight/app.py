@@ -21,6 +21,7 @@ from asus_kbd_backlight.backlight import LEVEL_OFF, BacklightError, get_backligh
 from asus_kbd_backlight.hook import KeyboardIdleHook, pump_messages
 
 POLL_INTERVAL = 0.05  # 50 ms -> well inside the <500 ms turn-off target
+FAIL_RETRY_INTERVAL = 3.0  # while backlight control is failing, don't re-hit WMI every tick
 WM_QUIT = 0x0012
 
 log = logging.getLogger("asus_kbd_backlight")
@@ -36,23 +37,28 @@ class Controller:
         self._hook = KeyboardIdleHook()
         self._is_on: bool | None = None
         self._last_error: str | None = None
+        self._last_attempt = 0.0
         self._stop = threading.Event()
         self._worker = threading.Thread(target=self._run, name="backlight-worker", daemon=True)
 
     def _apply(self, on: bool) -> None:
         if on == self._is_on:
             return
+        now = time.monotonic()
+        if self._last_error is not None and now - self._last_attempt < FAIL_RETRY_INTERVAL:
+            return  # backing off from a persistent failure - don't hammer WMI every tick
+        self._last_attempt = now
         level = self._cfg.on_level if on else LEVEL_OFF
         try:
             self._backlight.set_level(level)
-        except BacklightError as exc:
-            # NFR-4: a hardware failure must not desync our model or kill the
-            # process without cleanup. Leave _is_on unchanged and retry next tick,
-            # but log a repeating failure only once.
+        except Exception as exc:  # noqa: BLE001
+            # NFR-4: no backlight fault may desync our model or kill the worker
+            # thread. Leave _is_on unchanged, retry after the backoff, and log a
+            # repeating failure only once.
             msg = str(exc)
             if msg != self._last_error:
                 log.error("%s", msg)
-                log.error("backlight control is failing; will keep retrying quietly")
+                log.error("backlight control is failing; retrying every %.0fs", FAIL_RETRY_INTERVAL)
                 self._last_error = msg
             return
         if self._last_error is not None:
@@ -80,9 +86,14 @@ class Controller:
         log.info("keyboard hook installed")
         self._worker.start()
 
-    def stop(self) -> None:
+    def stop(self, join_timeout: float = 2.0) -> None:
         self._stop.set()
-        self._worker.join(timeout=2.0)
+        self._worker.join(timeout=join_timeout)
+        if self._worker.is_alive():
+            # The final _apply(on=False) in _run may not have completed (a slow
+            # WMI call); the backlight could still be on. Hook removal below is
+            # unconditional and still correct.
+            log.warning("worker did not stop within 2s; backlight may still be lit")
         self._hook.uninstall()        # FR-6: hand keyboard control back to the system
         log.info("stopped, keyboard hook removed")
 

@@ -19,8 +19,11 @@ HC_ACTION = 0
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-_HOOKPROC = ctypes.CFUNCTYPE(
-    ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+# A hook procedure is __stdcall and returns LRESULT (LONG_PTR). WINFUNCTYPE
+# (not CFUNCTYPE) gives the right calling convention on 32-bit Python, and
+# c_ssize_t keeps the return the pointer width instead of truncating to 32 bits.
+_HOOKPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_ssize_t, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
 )
 
 # Without an explicit restype ctypes assumes c_int (32-bit) and truncates the

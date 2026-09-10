@@ -36,6 +36,18 @@ _VALID_LEVELS = (LEVEL_OFF, LEVEL_MIN, LEVEL_MID, LEVEL_MAX)
 _KBD_BACKLIGHT_SET = 0x80
 
 
+def encode_control_status(level: int) -> int:
+    """The ``Control_status`` value for ``DEVS`` at a brightness ``level``.
+
+    Bit 7 ("apply now") plus the 0..3 level. Kept as a standalone, testable
+    function because dropping bit 7 is invisible to every test and to
+    ``--dry-run`` yet ships a keyboard that never lights (see DESIGN).
+    """
+    if level not in _VALID_LEVELS:
+        raise ValueError(f"level must be 0-3, got {level!r}")
+    return _KBD_BACKLIGHT_SET | level
+
+
 class BacklightError(RuntimeError):
     """A hardware communication failure while setting brightness (NFR-4)."""
 
@@ -45,10 +57,12 @@ class Backlight(Protocol):
 
 
 def _co_initialize() -> None:
-    import pythoncom
-
-    # S_FALSE (already initialised on this thread) is fine; anything else raises.
+    # The import and the call are both best-effort: a missing pywin32 surfaces
+    # later as a BacklightError from _bind(), and S_FALSE (already initialised on
+    # this thread) is fine.
     with contextlib.suppress(Exception):
+        import pythoncom
+
         pythoncom.CoInitialize()
 
 
@@ -69,35 +83,37 @@ class WmiBacklight:
     def _bind(self):
         if self._instance is not None:
             return self._instance, self._devs
+
+        # Everything here can raise a bare pywin32 com_error / ImportError. Any
+        # of it escaping would kill the worker thread (NFR-4), so the whole body
+        # funnels into BacklightError, and the cache is populated only once both
+        # objects exist (a half-set cache would wedge every later call).
         try:
             import win32com.client
-        except ImportError as exc:  # pragma: no cover
-            raise BacklightError("pywin32 is required for backlight control") from exc
 
-        try:
             service = win32com.client.GetObject(WMI_NAMESPACE_MONIKER)
             rows = list(service.ExecQuery(f"SELECT * FROM {WMI_CLASS}"))
+            if not rows:
+                raise BacklightError(
+                    f"{WMI_CLASS} exposes no instances - is the ASUS System Control "
+                    "Interface driver installed?"
+                )
+            instance = rows[0]
+            devs = service.Get(WMI_CLASS).Methods_("DEVS")
+        except BacklightError:
+            raise
+        except ImportError as exc:  # pragma: no cover
+            raise BacklightError("pywin32 is required for backlight control") from exc
         except Exception as exc:  # noqa: BLE001
-            hint = ""
-            if "denied" in str(exc).lower():
-                hint = " - run this program as Administrator"
+            hint = " - run this program as Administrator" if "denied" in str(exc).lower() else ""
             raise BacklightError(f"cannot reach {WMI_CLASS}: {exc}{hint}") from exc
 
-        if not rows:
-            raise BacklightError(
-                f"{WMI_CLASS} exposes no instances - is the ASUS System Control "
-                "Interface driver installed?"
-            )
-        self._instance = rows[0]
-        self._devs = service.Get(WMI_CLASS).Methods_("DEVS")
+        self._instance, self._devs = instance, devs
         _log.debug("bound %s instance and DEVS method", WMI_CLASS)
         return self._instance, self._devs
 
     def set_level(self, level: int) -> None:
-        if level not in _VALID_LEVELS:
-            raise ValueError(f"level must be 0-3, got {level!r}")
-
-        control_status = _KBD_BACKLIGHT_SET | level
+        control_status = encode_control_status(level)
 
         _co_initialize()
         instance, devs = self._bind()
