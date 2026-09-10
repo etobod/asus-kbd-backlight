@@ -7,7 +7,7 @@
 **Changelog**
 
 - 0.1 — core daemon: keyboard-only idle hook, WMI backlight control, file config. Shipped and verified on TUF Gaming A14 (FA401).
-- 0.2 — adds a tray UI: automatic elevation, tray icon, settings window, live-applied config (FR-7 … FR-11, sections 12–13).
+- 0.2 — adds a tray UI: automatic elevation, tray icon, night-themed settings window with sliders, autostart, live-applied config (FR-7 … FR-13, sections 12–13).
 
 ---
 
@@ -97,14 +97,42 @@ As a user, I want the program to sit in the notification area with no window, so
 ### FR-9 — Settings window
 As a user, I want a small settings window reachable from the tray, so that I can change the behaviour without opening a config file.
 
-*Acceptance:* the window has:
+*Acceptance:* one fixed-size, non-resizable window (~380 × 440), app icon in the title bar, laid out top-to-bottom in two labelled groups plus a button row and footer:
 
-- "Keep the backlight on for **[N]** seconds after the last keystroke" — integer, 1–60.
-- "Brightness while typing" — **33% / 66% / 100%**.
-- "**Start with Windows**" — checkbox, **on by default** (see FR-12).
-- The version number (e.g. `v0.2.0`), shown read-only in a corner / footer.
+```
+  ⌨  asus-kbd-backlight
 
-**Save** writes the config and applies it live (FR-11); **Cancel** or closing the window discards changes and returns to the tray without quitting the daemon. Out-of-range input is rejected inline with a message; Save stays disabled until the input is valid. Opening Settings twice focuses the existing window rather than opening a second.
+  BACKLIGHT
+  ┌─────────────────────────────────────────┐
+  │ Stay on after typing                     │
+  │   1 ─────────●───────────────── 60   6 s │   slider, typeable value box
+  │                                          │
+  │ Brightness while typing                  │
+  │        ┃          ┃          ┃           │   3-stop snap slider
+  │       33%        66%        100%         │   (no free values)
+  │                    ▲ 66%                 │   selected stop echoed
+  └─────────────────────────────────────────┘
+
+  STARTUP
+  ┌─────────────────────────────────────────┐
+  │ ☑  Start with Windows                    │
+  └─────────────────────────────────────────┘
+
+                              [ Cancel ] [ Save ]
+  v0.2.0
+```
+
+- **Stay on after typing** — a slider over 1–60 with a small numeric box beside it; the box is typeable and clamps to range, the slider snaps to whole seconds. The two stay in sync.
+- **Brightness while typing** — a slider with exactly **three detents: 33% / 66% / 100%** (mapped to `on_level` 1/2/3). It cannot land between them; tick marks and labels sit under each detent, the chosen one is echoed below. No text entry, no percentage the hardware can't do.
+- **Start with Windows** — checkbox, **on by default** (see FR-12).
+- **Version** — `vX.Y.Z`, read-only, in the footer.
+
+**Save** writes the config and applies it live (FR-11). **Cancel** or the window's X discards changes and returns to the tray without quitting the daemon. Because every control is range-bound there is no invalid state; Save is enabled whenever something changed. Opening Settings twice focuses the existing window instead of opening a second.
+
+### FR-13 — Night-safe appearance
+As a user configuring this in a dark room, I want the settings window not to be a bright rectangle in my face, so that opening it doesn't undo the point of the tool.
+
+*Acceptance:* the window ships a **dark "night" theme by default** — deep navy ground, dark-rose accent, soft off-white text. No pure `#FFFFFF` on `#000000`; text/background contrast stays in a comfortable band (roughly 7:1–10:1, not maxed), accent and controls are low-saturation. Palette tokens are fixed in section 13. A `theme` config key (`night` default, `system` = follow the Windows light/dark setting and accent) is a stretch item, not required for v0.2.
 
 ### FR-10 — Application icon
 As a user, I want the program to have its own recognisable icon, so that I can spot it in the tray, Task Manager and Task Scheduler.
@@ -150,7 +178,7 @@ As a user, I want the app to start automatically when I log in, on by default, s
 | R-4 | A BIOS/firmware update changes `Device_ID` or the level mapping | Medium | Identifier is configurable (FR-4). |
 | R-5 | Antivirus flags the global keyboard hook as a keylogger | Medium | NFR-3, open source, explicit disclosure in README. |
 | R-6 | Other ASUS models use a different mapping | Low | Scope limited explicitly (section 4); verified-model list in README. |
-| R-7 | A GUI toolkit bloats or breaks the PyInstaller bundle | Medium | Use stdlib `tkinter`; keep the settings window a separate, minimal process; the daemon itself pulls in no GUI toolkit (tray is raw Win32 via pywin32, already a dependency). |
+| R-7 | A GUI toolkit bloats or breaks the PyInstaller bundle | Medium | `customtkinter` is pure Python (~1 MB) over stdlib `tkinter`; freezes with a documented `--collect-data customtkinter`. It lives only in the transient settings process — the daemon pulls in no GUI toolkit (tray is raw Win32 via pywin32, already a dependency). |
 | R-8 | `requireAdministrator` manifest blocks unelevated autostart (Startup folder, `HKCU\Run`) | Medium | Task Scheduler with *Run with highest privileges* is the supported autostart and already matches FR-5; document it, ship a helper to create the task. |
 | R-9 | A second event loop starves the low-level hook and trips `LowLevelHooksTimeout`, dropping keystrokes | High | One message loop for hook + tray (NFR-6); the settings window runs out of process. |
 
@@ -197,8 +225,9 @@ Format: *As a … I want … so that …*, with the acceptance criteria on the m
 **Settings (FR-9, FR-11)**
 
 - As a user who finds 3 s too short, I want to open Settings from the tray, type `6`, and click Save, so that the backlight now stays on 6 s after I stop typing — immediately, without restarting.
-- As a user in a very dark room, I want to pick 33% in Settings; as a user in a dim room, 66% or 100% — from a plain dropdown, not a hex value.
-- As a user who fat-fingered `600` into the seconds box, I want the window to stop me with a clear message instead of saving a useless value.
+- As a user setting brightness, I want a slider that only stops on 33% / 66% / 100%, so that I can't pick a value the keyboard can't actually show and I don't have to think in numbers.
+- As a user who fat-fingered `600` into the seconds box, I want it clamped to the allowed range instead of a useless value being saved.
+- As a user opening Settings at 2 a.m., I want a dark, low-glare window (navy, muted rose) rather than a white flash, so that configuring the tool doesn't defeat its purpose.
 - As a user, I want closing the settings window to leave the app running in the tray, so that I don't accidentally kill it by clicking the X.
 - As a user who prefers editing text files, I want hand-edits to `config.toml` to be picked up while the app runs, so that the GUI and the file never disagree.
 - As a user, I want the settings window to show the version number, so that when I report a problem I can say which build I'm on without hunting for it.
@@ -232,9 +261,37 @@ Two processes:
 ### FR-9 / FR-11 — settings + live apply
 
 - Tray "Settings" → `subprocess.Popen([exe_or_python, "--settings", "--no-elevate"])`. A named mutex (`AKB_SETTINGS_SINGLETON`) makes a second launch focus the first window instead of opening another.
-- Dialog (`app_settings.py`, ~140 lines, `tkinter`): `config.load()` → a `Spinbox` (1–60) bound to `timeout`, a `ttk.Combobox` of `33% / 66% / 100%` mapped to `on_level` 1/2/3, a `Checkbutton` bound to `autostart`, and a read-only `ttk.Label` showing `f"v{__version__}"` in the footer. Validation on `<KeyRelease>`; Save disabled while invalid. Save → `config.save(Config(timeout, on_level, device_id, autostart))` → close. Cancel / window‑close → exit with no write.
+- **Toolkit:** `customtkinter` (on top of stdlib `tkinter`). It gives themable dark widgets, a real slider with `number_of_steps` for snapping, and direct `fg_color` / `hover_color` overrides for the palette below — none of which plain `ttk` does without a fight. Pure Python, ~1 MB; freezes with `--collect-data customtkinter`. Revisits R-7.
+- Dialog (`app_settings.py`, ~180 lines): `config.load()` →
+  - **Stay on:** `CTkSlider(from_=1, to=60, number_of_steps=59)` bound to `timeout`, next to a `CTkEntry` that shows the value, accepts typing, and clamps on `<FocusOut>` / Return. Slider ↔ entry kept in sync via one shared `IntVar`.
+  - **Brightness:** `CTkSlider(from_=0, to=2, number_of_steps=2)` → index 0/1/2 → `on_level` 1/2/3. Three tick labels (`33% / 66% / 100%`) drawn under the track; the selected one bolded/echoed. The slider can only rest on a detent.
+  - **Start with Windows:** `CTkCheckBox` bound to `autostart`.
+  - **Footer:** `CTkLabel(text=f"v{__version__}")`, muted colour.
+  - **Buttons:** `Cancel` (secondary) and `Save` (accent). Save → `config.save(Config(timeout, on_level, device_id, autostart))` → close. Cancel / X → exit, no write.
+  - Optional nicety: while the brightness slider is being dragged, ping the daemon (a one-line local socket or a sentinel file) so the keyboard previews the level live. Cut if it complicates the process split.
 - `config.save(cfg, path=None)`: new function. `Config` gains `autostart: bool = True`. Serialise the keys (via `tomli-w`, new dep, or a short hand-writer), write to `config.toml.tmp`, `os.replace` onto `config.toml` (atomic).
 - Live reload: the worker loop already ticks every 50 ms; every ~1 s it also compares `config.toml`'s `st_mtime`/`st_size` to the last seen values and, on change, `config.load()` + swaps `Controller._cfg` under a `Lock`. No hook or COM churn (FR-11, NFR-6). A malformed file on reload is logged and the previous config kept.
+
+### FR-13 — night theme
+
+`customtkinter` in dark mode with a fixed custom palette (no reliance on the OS accent). Tokens, tuned for a dark room — nothing at pure white or pure black, low saturation:
+
+| Role | Hex | Use |
+|---|---|---|
+| `bg` | `#141824` | window ground (deep navy / *granat*) |
+| `surface` | `#1C2233` | the two group cards |
+| `border` | `#2A3350` | card outline, slider track (inactive) |
+| `text` | `#C9D1E6` | labels, values (soft off-white, not `#FFF`) |
+| `text-muted` | `#7C89A8` | section headers, version, tick labels |
+| `accent` | `#9E4A6E` | Save button, slider fill, checkbox tick (dark rose) |
+| `accent-hover` | `#B25A80` | hover |
+| `accent-pressed` | `#83405E` | pressed / focus ring |
+| `accent-text` | `#F0DCE6` | text on the accent button |
+| `slider-knob` | `#C77FA0` | slider handle |
+
+Layout: 24 px outer padding, 16 px between groups, group cards with 12 px inner padding and the `border` outline; section headers in `text-muted`, letter-spaced, 11 px; body text 13 px; the button row right-aligned; `Save` is the only accent-filled control on screen so the eye goes there. Window not resizable; centred on the screen that has the cursor.
+
+Stretch: a `theme` key — `night` (default) or `system` (`customtkinter.set_appearance_mode("system")` + the OS accent). Behind FR-13's "stretch item" wording; skip for v0.2 unless cheap.
 
 ### FR-12 — start with Windows
 
@@ -247,8 +304,8 @@ Two processes:
 
 ### Packaging
 
-- `pyproject.toml`: add `tomli-w` (config write). `tkinter` is stdlib. `pywin32` already present.
-- `scripts/build.ps1`: add `--icon assets/icon.ico`, `--uac-admin`, `--add-data "assets;assets"`. The `noconsole` build becomes the single user artifact; `--debug` / `--settings` are flags on it. Keep a `--console` debug build without `--uac-admin` for troubleshooting.
+- `pyproject.toml`: add `tomli-w` (config write) and `customtkinter` (settings window). `tkinter` is stdlib. `pywin32` already present.
+- `scripts/build.ps1`: add `--icon assets/icon.ico`, `--uac-admin`, `--add-data "assets;assets"`, `--collect-data customtkinter`. The `noconsole` build becomes the single user artifact; `--debug` / `--settings` are flags on it. Keep a `--console` debug build without `--uac-admin` for troubleshooting.
 - New: `scripts/make-icon.ps1` (or a committed `assets/icon.ico`) — generate the multi-res `.ico` from `assets/icon.svg` (ImageMagick / Inkscape). Design brief: a single backlit keycap with a soft glow; the paused variant desaturated.
 - Autostart is handled in-process (FR-12); the `--install-task` / `--uninstall-task` CLI is what `scripts/` and power users call.
 
@@ -256,6 +313,6 @@ Two processes:
 
 1. `assets/icon.ico` + `--icon` + `--uac-admin` — "double-click just works" (FR-7, FR-10 partial).
 2. Tray window + menu + Pause / Resume / Quit on the existing loop (FR-8).
-3. `config.save` (+ `autostart` field) + `--settings` dialog (seconds, brightness, autostart checkbox, version label) + file-watch live reload (FR-9, FR-11).
+3. `config.save` (+ `autostart` field) + `--settings` dialog in `customtkinter` — night palette, seconds slider+entry, 3-detent brightness slider, autostart checkbox, version footer — + file-watch live reload (FR-9, FR-11, FR-13).
 4. `autostart.reconcile` via Task Scheduler COM, wired to startup and config reload (FR-12).
 5. Paused-state icon + live tooltip, `TaskbarCreated` recovery (FR-10 complete, NFR-7).
