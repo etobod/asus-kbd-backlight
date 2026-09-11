@@ -1,10 +1,12 @@
 """Self-elevation (FR-7).
 
 Backlight control writes through ATKACPI and the low-level hook has to see keys
-typed into elevated windows, so the daemon needs Administrator rights. The
-frozen build gets them from the ``--uac-admin`` manifest; running from source
-there is no manifest, so ``main()`` re-launches itself once through the
-``runas`` verb.
+typed into elevated windows, so the daemon needs Administrator rights. Both
+the frozen builds and a source checkout run ``asInvoker`` (no
+``requireAdministrator`` manifest), so ``main()`` re-launches itself once
+through the ``runas`` verb. A manifest would make *every* launch of the exe
+elevate - including the settings window, which must stay unelevated (NFR-5)
+and is started from the very same exe with ``--settings``.
 
 The guard against a prompt loop is ``--no-elevate`` on the relaunched command
 line - ``relaunch_elevated`` always appends it, and :func:`should_elevate`
@@ -101,31 +103,46 @@ def should_elevate(
     return not (is_admin() if admin is None else admin)
 
 
-def _command(argv: Sequence[str]) -> tuple[str, list[str]]:
-    """The ``(executable, parameters)`` pair for re-launching this program.
+def launch_command(argv: Sequence[str], *, windowless: bool = False) -> tuple[str, list[str]]:
+    """The ``(executable, parameters)`` pair that starts this program with ``argv``.
 
-    Frozen, the executable is the exe itself; from source it is the
-    interpreter running ``-m asus_kbd_backlight``.
+    Frozen, the executable is the exe itself; from source it is the interpreter
+    running ``-m asus_kbd_backlight``. ``windowless`` swaps in the console-less
+    program (``paths.windowless_executable``: the windowed exe rather than the
+    debug build, ``pythonw.exe`` rather than ``python.exe``) for children the
+    user should never see a console for - the settings window, the logon task.
     """
+    if windowless:
+        from asus_kbd_backlight.paths import windowless_executable
+
+        executable = windowless_executable()
+    else:
+        executable = sys.executable
     params = list(argv)
     if getattr(sys, "frozen", False):
-        return sys.executable, params
-    return sys.executable, ["-m", "asus_kbd_backlight", *params]
+        return executable, params
+    return executable, ["-m", "asus_kbd_backlight", *params]
 
 
 def child_command(argv: Sequence[str]) -> tuple[str, list[str]]:
     """The ``(executable, parameters)`` pair for the elevated re-launch.
 
-    ``--no-elevate`` is appended so the child can never prompt again.
+    ``--no-elevate`` is appended so the child can never prompt again. It keeps
+    the exact program the user started (no ``windowless`` swap).
     """
     params = list(argv)
     if NO_ELEVATE_FLAG not in params:
         params.append(NO_ELEVATE_FLAG)
-    return _command(params)
+    return launch_command(params)
 
 
-def _shell_execute_runas(executable: str, params: str) -> int:
+def _shell_execute_runas(executable: str, params: str, directory: str | None = None) -> int:
     """``ShellExecuteW`` with the ``runas`` verb. Returns its raw result.
+
+    ``directory`` becomes the child's working directory. Without it a
+    ``runas``-elevated process starts in ``C:\\Windows\\System32``, so any
+    relative path on the command line (``--config my.toml``) would point at a
+    different file in the elevated child than in the process the user started.
 
     The return is an ``HINSTANCE``, i.e. pointer-width. Without an explicit
     ``restype`` ctypes assumes ``c_int`` and truncates it on 64-bit, which can
@@ -136,7 +153,7 @@ def _shell_execute_runas(executable: str, params: str) -> int:
     fn = ctypes.windll.shell32.ShellExecuteW
     with contextlib.suppress(AttributeError, TypeError):
         fn.restype = ctypes.c_void_p
-    return int(fn(None, "runas", executable, params, None, SW_SHOWNORMAL) or 0)
+    return int(fn(None, "runas", executable, params, directory, SW_SHOWNORMAL) or 0)
 
 
 def relaunch_elevated(argv: Sequence[str]) -> int:
@@ -155,7 +172,7 @@ def relaunch_elevated(argv: Sequence[str]) -> int:
     os.environ[ELEVATED_ENV] = "1"
     log.info("requesting Administrator rights (a UAC prompt will appear)")
     try:
-        rc = _shell_execute_runas(executable, subprocess.list2cmdline(params))
+        rc = _shell_execute_runas(executable, subprocess.list2cmdline(params), os.getcwd())
     except OSError as exc:
         log.error("could not request elevation: %s", exc)
         return 1
@@ -176,11 +193,6 @@ def relaunch_elevated(argv: Sequence[str]) -> int:
 # window and every config write stay unelevated. When we are already admin we
 # therefore hand the launch to Explorer (below); when we are not elevated a
 # plain ``Popen`` is already correct.
-
-
-def settings_command(argv: Sequence[str]) -> tuple[str, list[str]]:
-    """The ``(executable, parameters)`` pair that opens the settings window."""
-    return _command(argv)
 
 
 def _spawn_via_explorer(executable: str, params: list[str]) -> None:
@@ -217,9 +229,9 @@ def _spawn_via_explorer(executable: str, params: list[str]) -> None:
         shortcut = wsh.CreateShortCut(lnk_path)
         shortcut.TargetPath = executable
         shortcut.Arguments = subprocess.list2cmdline(params)
-        workdir = os.path.dirname(executable)
-        if workdir:
-            shortcut.WorkingDirectory = workdir
+        # Our working directory, as the runas relaunch keeps it too: a relative
+        # path means the same file in the settings window as in the daemon.
+        shortcut.WorkingDirectory = os.getcwd()
         shortcut.WindowStyle = SW_SHOWNORMAL
         shortcut.Save()
     except Exception as exc:  # noqa: BLE001 - pywintypes.com_error isn't an OSError
@@ -262,7 +274,7 @@ def spawn_settings(config_path: object | None = None) -> None:
     argv: list[str] = [SETTINGS_FLAG, NO_ELEVATE_FLAG]
     if config_path is not None:
         argv += ["--config", str(config_path)]
-    executable, params = settings_command(argv)
+    executable, params = launch_command(argv, windowless=True)
 
     if not is_admin():
         subprocess.Popen([executable, *params], close_fds=True)

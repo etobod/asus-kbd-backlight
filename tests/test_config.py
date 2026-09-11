@@ -35,7 +35,17 @@ def test_device_id_accepts_int(tmp_path):
     assert config.load(path).device_id == 0x00050021
 
 
-@pytest.mark.parametrize("body", ["timeout = 0", "timeout = -1", "on_level = 0", "on_level = 4"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "timeout = 0", "timeout = -1", "on_level = 0", "on_level = 4",
+        # TOML's non-finite floats: inf never turns the light off, nan never on.
+        "timeout = inf", "timeout = -inf", "timeout = nan", "timeout = 1e999",
+        # An integer too big for a float: OverflowError, which must surface as
+        # ValueError or it escapes the live reload's handler.
+        "timeout = 1" + "0" * 400,
+    ],
+)
 def test_invalid_values_rejected(tmp_path, body):
     path = tmp_path / "config.toml"
     path.write_text(body + "\n")

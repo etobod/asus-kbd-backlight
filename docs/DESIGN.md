@@ -1,7 +1,7 @@
 # DESIGN — asus-kbd-backlight
 
 Implementation notes for the requirements in [PRD.md](PRD.md). Tracks code
-version 0.2.0.
+version 0.2.1.
 
 ## Overview
 
@@ -86,15 +86,26 @@ turn-off latency far under the 500 ms target while costing negligible CPU
 
 ### Self-elevation happens once, and never for the settings window (FR-7)
 
-The frozen user artifact carries a `requireAdministrator` manifest
-(PyInstaller `--uac-admin`), so Windows prompts before Python even starts. A
-source checkout has no manifest, so `main()` decides elevation first of all —
+Neither build carries a `requireAdministrator` manifest (no PyInstaller
+`--uac-admin`): the exes start `asInvoker`, exactly like a source checkout. An
+earlier build had the manifest on the windowed exe, but a manifest elevates
+*every* launch of that exe — including `asus-kbd-backlight.exe --settings`, so
+the settings window would have run elevated (breaking NFR-5) and Explorer would
+have raised a UAC prompt each time it was opened from the tray. Instead
+`main()` decides elevation first of all —
 `should_elevate(args, admin=is_admin())` — and if it is true calls
 `relaunch_elevated(argv)`, which re-launches with `ShellExecuteW(None, "runas",
 …)` and returns. This runs **before** `_setup_logging`, and the about-to-exit
 parent is told `to_file=False`: it must not open the rotating log file the
 elevated child then owns, or a size-boundary rollover races between the two
 processes on Windows.
+
+`relaunch_elevated` passes the current working directory to `ShellExecuteW`:
+a `runas` child otherwise starts in `C:\Windows\System32`, and a relative
+`--config my.toml` would silently name a different (missing) file there. For
+the same reason `main()` resolves `--config` to an absolute path up front, and
+the settings shortcut `_spawn_via_explorer` writes carries the daemon's working
+directory (Explorer would otherwise start the child in the target's folder).
 
 The guard against a prompt loop is `--no-elevate`, appended to the relaunched
 command line by `child_command` and always honoured by `should_elevate` —
@@ -267,27 +278,96 @@ byte-holding reload watcher above.
 
 ### The settings window is a separate, unelevated process (FR-9, FR-13, NFR-5)
 
-`app_settings.py` is a small `tkinter` window launched from the tray's
+`app_settings.py` is a small `customtkinter` window launched from the tray's
 *Settings* entry (and by `asus-kbd-backlight --settings`). It `config.load()`s,
 shows three controls, writes the file back through `config.save` and exits. It
 never speaks to the daemon — the file is the channel, and the daemon's live
 reload (above) applies the change within ~1 s.
 
-**Toolkit — plain `tkinter`/`ttk`, not `customtkinter` (R-7 resolved).** Every
-palette token in PRD §13 is a flat hex string that `tk` widgets take directly
-(`background` / `foreground` / `troughcolor` / `activebackground`), and both
-sliders snap natively with `tk.Scale(resolution=1)`. Taking the dependency would
-add a `--collect-data customtkinter` step and bundle weight for rounded corners
-a six-control dialog does not need. The dependency list and the frozen bundle
-are unchanged by this milestone.
+**Toolkit — `customtkinter`, as PRD §13 specified.** 0.2.0 shipped a
+plain-`tkinter`/`ttk` version (the R-7 fallback, to avoid the dependency). It
+looked like a 1990s dialog: `tk.Scale`'s Motif-era trough and square slider,
+`LabelFrame(relief="solid")` hard 1-px boxes with the title cut into the line,
+a grey `clam` checkbox — and, worst, no DPI awareness, so Windows
+bitmap-stretched the whole window at 125/150 % scaling into something blurry
+and chunky. `customtkinter` fixes each of those in the toolkit rather than in
+hand-drawn `Canvas` code: rounded, outlined `CTkFrame` cards; `CTkSlider` with
+a filled track and `number_of_steps`, so the seconds slider rests on whole
+seconds and the brightness slider only on its three detents; a `CTkSwitch`;
+per-monitor DPI awareness and scaling (`ScalingTracker`); and a dark native
+title bar once `set_appearance_mode("dark")` is on. The cost is one pure-Python
+dependency (~1 MB plus `darkdetect`/`packaging`) and a
+`--collect-data customtkinter` in `build.ps1` for its theme JSON and fonts —
+only the settings process imports it.
 
-**Everything testable is a pure function.** `PALETTE`, `clamp_timeout`
-(`"600"→60`, `0→1`, `3.6→4`, junk→fallback), `index_to_level` / `level_to_index`
-(detent 0/1/2 ↔ `on_level` 1/2/3), `contrast_ratio` (WCAG, for the FR-13 "no
-pure #FFF/#000, not maxed" assertion) and `build_config` (assembles the saved
-`Config`, carrying `device_id` over untouched — it has no control, PRD open
-question 7) all live at module scope and are unit-tested without a display. The
-window itself is manual per TEST-PLAN.
+Layout follows PRD §13: a *Backlight* card (seconds slider + clamping entry,
+3-stop brightness slider with its ticks, the chosen one highlighted) and a
+*Startup* card (the autostart switch), each under a letter-spaced
+`text-muted` header (`letter_spaced` inserts hair spaces — Tk has no letter
+tracking); 24 px outer padding, 16 px between cards, 16 × 14 px card padding;
+the version left and Cancel / Save right in the footer, Save the only
+accent-filled control. Esc cancels. Sizes are customtkinter's unscaled pixels.
+
+The window opens **centred in the work area of the monitor under the
+pointer** (`centered_in` + `_work_area_at_pointer`: `MonitorFromPoint` →
+`GetMonitorInfoW.rcWork`), never *on* the pointer — opened from the tray that
+is the screen's bottom-right corner, and half the window, Save included, would
+land under the taskbar or off-screen. Coordinates may be negative on a monitor
+left of the primary one. `_center` positions with `wm_geometry` because
+`CTk.geometry` would rescale coordinates that are already physical pixels.
+
+Two data-safety rules: a timeout the slider can't show exactly (`300` or `2.5`
+s — legal in the file) is displayed clamped/rounded but **kept as-is on Save**
+unless the user touched the timeout controls (`build_config`'s
+`timeout_touched`: a slider drag or any edit of the box — tracked, not
+inferred from the value, so deliberately picking the edge value 60 for a
+file's 300 still saves 60), so opening
+Settings to flip the autostart switch never rewrites it; `clamp_timeout` rounds
+half-up and treats `inf`/`nan` as unparseable. And errors are shown, not just
+logged — the windowed exe has no console, so a config that can't be loaded
+(unreadable, not TOML, out of range) or a failed save pops a message box naming
+the file and the reason (`_show_error`); a failed save keeps the window open.
+A window that fails to open at all (Tk or customtkinter broken) is reported
+the same way — `MessageBoxW` needs no Tk. A second click on Settings restores
+the open window if it is minimized before raising it (`SetForegroundWindow`
+alone leaves a minimized window minimized). Upstream of all this,
+`Config.validated` rejects a non-finite timeout: TOML has `inf`/`nan` literals,
+and an infinite timeout never turns the light off while `nan` compares false
+with everything, so the light would never turn on.
+
+**The native frame is dressed too, via DWM — not replaced.** customtkinter's
+dark mode only sets `DWMWA_USE_IMMERSIVE_DARK_MODE` (Windows' generic
+dark-grey caption). `style_native_frame` adds, on Windows 11,
+`DWMWA_CAPTION_COLOR` = `bg`, `DWMWA_BORDER_COLOR` = `border`,
+`DWMWA_TEXT_COLOR` = `text-muted` and rounded corners, so the caption blends
+into the window instead of framing it in a lighter band; each attribute is set
+independently and failures are ignored (Windows 10 keeps the dark-grey
+caption; pre-20H1 builds get the old dark-mode id 19). Colours go through
+`colorref`, because a Win32 `COLORREF` is `0x00BBGGRR` — reversed from the hex
+string. A frameless `overrideredirect` window with a hand-drawn title bar was
+rejected: it loses Alt+Tab, Aero Snap, the taskbar button and correct
+per-monitor DPI moves. The caption shows our `icon.ico` (`iconbitmap`, set
+before customtkinter's deferred default-icon timer, which then stands down)
+instead of Tk's feather. `resizable(False, False)` only greys the maximize box
+out, so `_make_dialog_frame` clears `WS_MINIMIZEBOX | WS_MAXIMIZEBOX` from the
+window style (`dialog_style`) and asks for a frame redraw: the caption shows
+Close alone, like any small fixed dialog.
+
+Before handing a look change to the user, `scripts/snap-settings.py` (local,
+gitignored, not shipped) renders the window to a PNG with `PrintWindow` — built
+in-process from the source tree, or `--attach`ed to a frozen
+`asus-kbd-backlight.exe --settings --no-elevate --config <scratch>` which it
+then closes with `WM_CLOSE` (the Cancel path). It only ever touches the
+unelevated settings window — never the daemon, the hook or the hardware.
+
+**Everything testable is a pure function, and the rest is tested with a real
+window.** `PALETTE`, `clamp_timeout` (`"600"→60`, `0→1`, `3.6→4`,
+junk→fallback), `index_to_level` / `level_to_index` (detent 0/1/2 ↔
+`on_level` 1/2/3), `contrast_ratio`, `letter_spaced` and `build_config`
+(carrying `device_id` over untouched — it has no control, PRD open question 7)
+live at module scope. The widget-level tests build the actual `SettingsWindow`
+(withdrawn, with an injected `save`) and skip when Tk cannot start; the look
+itself is still the user's call (TEST-PLAN).
 
 **De-elevation (the NFR-5 trap).** The daemon is elevated, so a plain
 `subprocess.Popen` would hand the child the admin token and the window would
@@ -295,7 +375,10 @@ write `config.toml` with an admin-owned ACL. `elevate.spawn_settings` therefore
 branches on `is_admin()`: unelevated (a dev with `--no-elevate`) a plain `Popen`
 is already right; elevated it hands the launch to Explorer (below). It never
 uses the `runas` verb — that *raises* integrity, the opposite of what NFR-5
-wants. A named mutex `AKB_SETTINGS_SINGLETON` (in `app_settings.py`) makes a
+wants. Either way the child is started through `paths.windowless_executable()`:
+the windowed `asus-kbd-backlight.exe` (even when the daemon is the console
+debug build) or `pythonw.exe` from source, so no console window opens behind
+the settings window. The same helper picks the program the logon task runs. A named mutex `AKB_SETTINGS_SINGLETON` (in `app_settings.py`) makes a
 second launch focus the open window instead of opening another.
 
 **Getting Explorer to do the launch, not a duplicated token.** The first
@@ -321,8 +404,9 @@ immediately would race that read.
 
 ### Start with Windows is a scheduler task the daemon reconciles (FR-12, R-8)
 
-The user artifact carries a `requireAdministrator` manifest, which the Startup
-folder and `HKCU\Run` cannot launch without a UAC prompt. The supported
+The daemon needs Administrator rights, and the Startup folder / `HKCU\Run`
+can only start it unelevated, so it would ask for UAC at every logon. The
+supported
 autostart is a Task Scheduler entry with *Run with highest privileges*
 (`RunLevel = HIGHEST`) and an *At log on* trigger — it starts the daemon
 elevated at logon with **no** prompt.
@@ -357,9 +441,10 @@ The decision:
 
 - `enabled` and the task is absent → register it;
 - `enabled` and it exists → re-register it, so a moved exe or a switched Python
-  self-heals (`action_target()` is recomputed every time: the frozen
-  `sys.executable`, else `pythonw -m asus_kbd_backlight` so no console flashes
-  at logon);
+  self-heals (`action_target()` is recomputed every time through
+  `paths.windowless_executable()`: the windowed exe when frozen — even if the
+  daemon itself is the debug build — else `pythonw -m asus_kbd_backlight`, so
+  no console flashes at logon);
 - not `enabled` and it exists → delete it.
 
 Any COM failure is logged and swallowed **and `reconcile` returns `False`** — a
@@ -371,6 +456,19 @@ report, rather than handing the result to a detached elevated process. First
 run with no config file: `config.load` returns `autostart=True`, `config.save`
 writes the file so the checkbox state is visible, and the task is registered
 once, silently (PRD open question 10).
+
+`_task_exists` lists the root folder's tasks (`GetTasks(TASK_ENUM_HIDDEN)`,
+names compared case-insensitively) instead of calling `GetTask` and decoding a
+"not found" error: pywin32 reports a failing automation call as
+`DISP_E_EXCEPTION` with the real code buried in the excepinfo, which is easy to
+misread. A failure of the listing itself — access denied, the service
+unreachable — propagates, so `reconcile(False)` reports failure instead of
+skipping the delete and claiming success. The task runs at priority 4 (normal) rather than
+Task Scheduler's default 7 (below normal): the daemon services the low-level
+keyboard hook, and a starved hook thread can blow `LowLevelHooksTimeout`.
+`--install-task` / `--uninstall-task` never self-elevate (so their exit code
+reaches the caller), and without admin rights they exit 1 with a clear message
+rather than attempt a registration that is bound to be denied.
 
 The COM object is injectable, so `reconcile`'s create/refresh/delete/no-op
 decision is unit-tested against a fake `Schedule.Service`; the real

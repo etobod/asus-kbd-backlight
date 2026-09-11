@@ -95,8 +95,8 @@ class _ShellExecute:
         self.rc = rc
         self.calls = []
 
-    def __call__(self, executable, params):
-        self.calls.append((executable, params))
+    def __call__(self, executable, params, directory=None):
+        self.calls.append((executable, params, directory))
         return self.rc
 
 
@@ -114,9 +114,26 @@ def test_relaunch_starts_exactly_one_elevated_child(shell_execute):
     stub = shell_execute(42)  # > 32 == success
     assert elevate.relaunch_elevated(["--debug"]) == 0
     assert len(stub.calls) == 1
-    executable, params = stub.calls[0]
+    executable, params, _ = stub.calls[0]
     assert executable == sys.executable
     assert elevate.NO_ELEVATE_FLAG in params
+
+
+def test_relaunch_keeps_the_working_directory(shell_execute, monkeypatch, tmp_path):
+    # A runas child otherwise starts in System32 and a relative --config would
+    # name a different file there.
+    monkeypatch.chdir(tmp_path)
+    stub = shell_execute(42)
+    elevate.relaunch_elevated(["--config", "my.toml"])
+    assert stub.calls[0][2] == str(tmp_path)
+
+
+def test_spawn_settings_forwards_the_config_path(monkeypatch):
+    monkeypatch.setattr(elevate, "is_admin", lambda: False)
+    calls = []
+    monkeypatch.setattr(elevate.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    elevate.spawn_settings("my.toml")
+    assert calls[0][calls[0].index("--config") + 1] == "my.toml"
 
 
 def test_relaunch_sets_the_env_guard(shell_execute, monkeypatch):
@@ -154,17 +171,28 @@ def test_cli_exposes_the_elevation_flags():
 # --- de-elevated settings spawn (NFR-5) ----------------------------------
 
 
-def test_settings_command_runs_the_module_from_source():
-    exe, params = elevate.settings_command([elevate.SETTINGS_FLAG, elevate.NO_ELEVATE_FLAG])
-    assert exe == sys.executable
+def test_windowless_launch_command_from_source_runs_the_module_via_pythonw(fake_exe):
+    # No console window behind the settings window (the swap rule itself is
+    # pinned in test_paths; here: that the launch command uses it).
+    tmp = fake_exe("python.exe", "pythonw.exe")
+    exe, params = elevate.launch_command(["--settings", "--no-elevate"], windowless=True)
+    assert exe == str(tmp / "pythonw.exe")
     assert params == ["-m", "asus_kbd_backlight", "--settings", "--no-elevate"]
 
 
-def test_settings_command_runs_the_exe_when_frozen(monkeypatch):
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    exe, params = elevate.settings_command(["--settings", "--no-elevate"])
-    assert exe == sys.executable
+def test_windowless_launch_command_when_frozen_uses_the_windowed_twin(fake_exe):
+    tmp = fake_exe("asus-kbd-backlight-debug.exe", "asus-kbd-backlight.exe", frozen=True)
+    exe, params = elevate.launch_command(["--settings", "--no-elevate"], windowless=True)
+    assert exe == str(tmp / "asus-kbd-backlight.exe")
     assert params == ["--settings", "--no-elevate"]
+
+
+def test_relaunch_command_is_not_redirected_to_the_windowless_program(fake_exe):
+    # Only the settings child / logon task switch programs; the daemon's own
+    # elevated re-launch keeps running the exact executable the user started.
+    tmp = fake_exe("asus-kbd-backlight-debug.exe", "asus-kbd-backlight.exe", frozen=True)
+    exe, _ = elevate.child_command(["--debug"])
+    assert exe == str(tmp / "asus-kbd-backlight-debug.exe")
 
 
 def test_spawn_settings_unelevated_uses_a_plain_popen(monkeypatch):
@@ -265,7 +293,10 @@ def fake_win32com(monkeypatch):
     return wsh
 
 
-def test_spawn_via_explorer_writes_a_shortcut_and_hands_it_to_explorer(monkeypatch, fake_win32com):
+def test_spawn_via_explorer_writes_a_shortcut_and_hands_it_to_explorer(
+    monkeypatch, fake_win32com, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
     calls = []
     monkeypatch.setattr(elevate.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
     monkeypatch.setattr(elevate.os, "remove", lambda path: None)  # never touch the real temp dir
@@ -280,6 +311,9 @@ def test_spawn_via_explorer_writes_a_shortcut_and_hands_it_to_explorer(monkeypat
     assert shortcut.saved is True
     assert shortcut.TargetPath == r"C:\python\python.exe"
     assert "--settings" in shortcut.Arguments and "--no-elevate" in shortcut.Arguments
+    # The child starts where the daemon runs, so a relative --config names the
+    # same file (without this Explorer starts it in the target's folder).
+    assert shortcut.WorkingDirectory == str(tmp_path)
 
     # Explorer, not us, does the actual launch - the "elevated Popen" trap
     # NFR-5 exists for is only reachable via CreateProcess-family calls, and

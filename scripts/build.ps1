@@ -2,9 +2,12 @@
 #   .\asus-kbd-backlight.exe        one file, NO console, self-elevating - the user artifact
 #   .\asus-kbd-backlight-debug.exe  one file, WITH console + live log - for testing
 #
-# Only the user artifact carries --uac-admin (FR-7). The debug build stays
-# manifest-free so it can be started unelevated and re-launch itself through
-# ShellExecuteW, which is the code path a source checkout takes.
+# Neither build carries --uac-admin. Both start asInvoker and re-launch
+# themselves elevated once through ShellExecuteW "runas" (FR-7), the same code
+# path a source checkout takes. A requireAdministrator manifest would also
+# elevate the settings window, which runs from this same exe with --settings
+# and must stay unelevated (NFR-5) - and Explorer would raise a UAC prompt
+# every time it is opened from the tray.
 #
 #   py -m pip install pyinstaller
 #   .\scripts\build.ps1
@@ -57,9 +60,13 @@ $common = @(
     "--hidden-import", "win32com.client",
     "--hidden-import", "pythoncom",
     "--hidden-import", "pywintypes",
-    # the settings window imports tkinter inside a method; pull in the toolkit
-    # (and its Tcl/Tk data via PyInstaller's tkinter hook) explicitly
+    # customtkinter (below) already pulls tkinter in; kept explicit so the
+    # Tcl/Tk runtime data always rides along via PyInstaller's tkinter hook
     "--hidden-import", "tkinter",
+    # the settings window's toolkit, also imported lazily; its theme JSON and
+    # fonts are package data PyInstaller only picks up when told to (R-7)
+    "--hidden-import", "customtkinter",
+    "--collect-data", "customtkinter",
     # first-party modules reached only through function-level imports in app.py
     "--hidden-import", "asus_kbd_backlight.app_settings",
     "--hidden-import", "asus_kbd_backlight.autostart",
@@ -67,7 +74,7 @@ $common = @(
     "--hidden-import", "asus_kbd_backlight.elevate"
 )
 
-& $py -m PyInstaller @common --noconsole --uac-admin --name asus-kbd-backlight `
+& $py -m PyInstaller @common --noconsole --name asus-kbd-backlight `
     src\asus_kbd_backlight\__main__.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for asus-kbd-backlight" }
 Copy-Item build\dist\asus-kbd-backlight.exe .\asus-kbd-backlight.exe -Force

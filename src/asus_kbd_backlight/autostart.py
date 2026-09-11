@@ -1,9 +1,9 @@
 """Start-with-Windows via a Task Scheduler logon task (FR-12, R-8).
 
-A ``requireAdministrator`` manifest rules out the Startup folder and
-``HKCU\\Run`` for an elevated program, so the supported autostart is a Task
-Scheduler entry with *Run with highest privileges* — it starts the daemon
-elevated at logon with **no** UAC prompt.
+The daemon needs Administrator rights, and the Startup folder / ``HKCU\\Run``
+can only start it unelevated - it would then ask for UAC at every logon. The
+supported autostart is a Task Scheduler entry with *Run with highest
+privileges* — it starts the daemon elevated at logon with **no** UAC prompt.
 
 The **elevated daemon** owns the task: :func:`reconcile` is called at startup
 and after every live config reload, and creates / refreshes / deletes the entry
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
+import subprocess
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ _TASK_ACTION_EXEC = 0
 _TASK_CREATE_OR_UPDATE = 6
 _TASK_LOGON_INTERACTIVE_TOKEN = 3
 _TASK_RUNLEVEL_HIGHEST = 1
+_TASK_PRIORITY_NORMAL = 4  # ITaskSettings.Priority: 0 realtime .. 10 idle, default 7
 
 
 def _connect() -> object:
@@ -61,23 +62,33 @@ def _current_user() -> str:
 def action_target() -> tuple[str, str]:
     """``(program, arguments)`` the task should run.
 
-    Frozen: the exe itself. From source: ``pythonw -m asus_kbd_backlight`` so no
-    console flashes at logon. Recomputed on every reconcile so moving the exe
-    (or switching Python) is self-healing.
+    Frozen: the windowed exe (even when the daemon itself is the console debug
+    build). From source: ``pythonw -m asus_kbd_backlight``. Either way no
+    console flashes at logon (``paths.windowless_executable``). Recomputed on
+    every reconcile so moving the exe (or switching Python) is self-healing.
     """
-    if getattr(sys, "frozen", False):
-        return sys.executable, ""
-    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-    exe = pythonw if os.path.isfile(pythonw) else sys.executable
-    return exe, "-m asus_kbd_backlight"
+    from asus_kbd_backlight.elevate import launch_command
+
+    executable, params = launch_command([], windowless=True)
+    return executable, subprocess.list2cmdline(params)
+
+
+# ITaskFolder.GetTasks flag: include hidden tasks in the listing.
+_TASK_ENUM_HIDDEN = 1
 
 
 def _task_exists(folder: object) -> bool:
-    try:
-        folder.GetTask(TASK_NAME)
-        return True
-    except Exception:  # noqa: BLE001 - COM raises for "not found"; treat as absent
-        return False
+    """Whether the task is registered - decided by *listing* the folder, not by
+    catching ``GetTask``'s "not found": pywin32 reports that as
+    ``DISP_E_EXCEPTION`` with the real code tucked into the excepinfo, a shape
+    an earlier version got wrong (and then the logon task could never be
+    created). A listing needs no error classification at all, so every
+    exception here is a genuine failure (access denied, the service
+    unreachable) and propagates: :func:`reconcile` reports it rather than
+    skipping a delete and claiming success. Task names are case-insensitive."""
+    tasks = folder.GetTasks(_TASK_ENUM_HIDDEN)
+    wanted = TASK_NAME.casefold()
+    return any(tasks.Item(i).Name.casefold() == wanted for i in range(1, tasks.Count + 1))
 
 
 def _populate(task_def: object) -> None:
@@ -107,6 +118,10 @@ def _populate(task_def: object) -> None:
     settings.StopIfGoingOnBatteries = False
     settings.ExecutionTimeLimit = "PT0S"  # no time limit
     settings.StartWhenAvailable = True
+    # Task Scheduler's default is 7 (below normal). The daemon services the
+    # low-level keyboard hook; starved of CPU under load it can blow
+    # LowLevelHooksTimeout and miss keystrokes. 4 == normal priority.
+    settings.Priority = _TASK_PRIORITY_NORMAL
 
 
 def _register(service: object, folder: object) -> None:

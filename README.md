@@ -67,9 +67,14 @@ Your antivirus may still flag the hook. That is a reasonable heuristic doing its
 pip install asus-kbd-backlight
 ```
 
-The program needs Administrator rights and asks for them itself: start it normally and answer the single UAC prompt. The released `asus-kbd-backlight.exe` carries a `requireAdministrator` manifest, so Windows prompts before it starts; from a source checkout `python -m asus_kbd_backlight` re-launches itself elevated once. Declining the prompt exits cleanly rather than leaving a half-working hook.
+The program needs Administrator rights and asks for them itself: start it normally and answer the single UAC prompt. `asus-kbd-backlight.exe` and `python -m asus_kbd_backlight` both start unelevated and re-launch themselves elevated once — so the settings window, which runs from the same program, can stay unelevated and opens with no prompt. Declining the prompt exits cleanly rather than leaving a half-working hook.
 
 `--dry-run` runs the logic against a no-op backlight and never prompts.
+`--set LEVEL` (set the backlight once and exit — for probing `device_id`)
+needs an elevated prompt; without one it exits 1 with a message. Like the other
+one-shot flags, run it from `asus-kbd-backlight-debug.exe` or
+`python -m asus_kbd_backlight` to see its output — the windowed exe has no
+console.
 
 ### Start with Windows
 
@@ -77,8 +82,11 @@ On by default. The app keeps a Task Scheduler entry (`asus-kbd-backlight`, *Run
 with highest privileges*, *At log on*) that starts it elevated at logon with no
 UAC prompt, and the elevated daemon creates or removes that entry to match the
 **Start with Windows** checkbox in the settings window (config key `autostart`).
-Untick it and Save, or run `asus-kbd-backlight --uninstall-task`, to stop it
-launching at logon; `--install-task` puts it back. You never need to touch Task
+Untick it and Save, or run `asus-kbd-backlight --uninstall-task` from an
+elevated prompt (*Run as administrator*), to stop it launching at logon;
+`--install-task` puts it back. Both exit non-zero if they fail — use
+`asus-kbd-backlight-debug.exe` or `python -m asus_kbd_backlight` to see the
+message, since the windowed exe has no console. You never need to touch Task
 Scheduler by hand. (Running with an explicit `--config` does not manage the
 task — the scheduled entry always uses the default config location.)
 

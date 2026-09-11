@@ -8,6 +8,7 @@ keys fall back to the defaults below (FR-4).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -45,8 +46,11 @@ class Config:
     autostart: bool = DEFAULT_AUTOSTART
 
     def validated(self) -> Config:
-        if self.timeout <= 0:
-            raise ValueError(f"timeout must be > 0, got {self.timeout!r}")
+        # TOML has inf and nan literals (and 1e999 parses to inf). An infinite
+        # timeout would never turn the light off; nan compares False with
+        # everything, so the daemon would never turn it *on*.
+        if not math.isfinite(self.timeout) or self.timeout <= 0:
+            raise ValueError(f"timeout must be a finite number > 0, got {self.timeout!r}")
         if self.on_level not in (1, 2, 3):
             raise ValueError(f"on_level must be 1, 2 or 3, got {self.on_level!r}")
         if not (0 < self.device_id <= 0xFFFFFFFF):
@@ -111,6 +115,11 @@ def load_bytes(raw: bytes) -> Config:
         timeout = float(raw_timeout)
     except (TypeError, ValueError):
         raise ValueError(f"config: 'timeout' must be a number, got {raw_timeout!r}") from None
+    except OverflowError:
+        # A TOML integer too big for a float (hundreds of digits). Left as an
+        # OverflowError it would slip past every ValueError handler - the live
+        # reload's among them, killing the worker thread.
+        raise ValueError("config: 'timeout' is far too large") from None
 
     raw_level = data.get("on_level", DEFAULT_ON_LEVEL)
     if isinstance(raw_level, bool) or not isinstance(raw_level, int):

@@ -418,6 +418,20 @@ def _is_one_shot(args: argparse.Namespace) -> bool:
     )
 
 
+def _needs_admin_in_place(args: argparse.Namespace) -> str | None:
+    """The flag of a one-shot command that needs Administrator rights but runs
+    in place (``should_elevate`` never re-launches it, so its output and exit
+    code reach the caller) - or ``None``. One place, so a new such command
+    can't forget the up-front check."""
+    if args.install_task:
+        return "--install-task"
+    if args.uninstall_task:
+        return "--uninstall-task"
+    if args.set is not None and not args.dry_run:
+        return "--set"
+    return None
+
+
 def _manages_autostart(args: argparse.Namespace, *, admin: bool = True) -> bool:
     """Whether this daemon run owns the Task Scheduler entry (FR-12).
 
@@ -475,6 +489,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     args = _parse_args(argv)
+    if args.config is not None:
+        # Pin a relative --config to *this* process's working directory. The
+        # settings window is started through a shortcut whose working directory
+        # is the exe's folder, so it must be handed an absolute path.
+        args.config = args.config.resolve()
 
     # FR-7: decide elevation before configuring logging, so the unelevated
     # parent never opens the rotating log file. The child is re-launched with
@@ -492,6 +511,14 @@ def main(argv: list[str] | None = None) -> int:
         from asus_kbd_backlight import app_settings
 
         return app_settings.run(args.config)
+
+    needs_admin = _needs_admin_in_place(args)
+    if needs_admin and not admin:
+        # These run in place (never self-elevate, so their exit code and output
+        # reach the caller) but need admin: say so up front instead of failing
+        # later inside Task Scheduler COM or WMI.
+        log.error("%s needs Administrator rights: run it from an elevated prompt", needs_admin)
+        return 1
 
     if args.install_task or args.uninstall_task:
         from asus_kbd_backlight import autostart

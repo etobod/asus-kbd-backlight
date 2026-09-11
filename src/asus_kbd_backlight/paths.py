@@ -28,3 +28,29 @@ def asset(name: str) -> Path | None:
     """
     path = asset_dir() / name
     return path if path.is_file() else None
+
+
+# build.ps1 names the console build after the windowed one plus this suffix
+# (asus-kbd-backlight.exe / asus-kbd-backlight-debug.exe).
+_DEBUG_SUFFIX = "-debug"
+
+
+def windowless_executable() -> str:
+    """The console-less program to start a child process with.
+
+    Frozen: the running exe itself, unless it is the console *debug* build -
+    then its windowed twin (``foo-debug.exe`` -> ``foo.exe``) next to it, so
+    the settings window or the logon task never pops up a console. The twin is
+    derived from the running exe's own name rather than a hard-coded one, so a
+    renamed download (``asus-kbd-backlight (1).exe``) never hands off to an
+    older copy that happens to sit in the same folder. From source:
+    ``pythonw.exe`` next to the interpreter, for the same reason. Falls back to
+    ``sys.executable`` when that sibling isn't there.
+    """
+    exe = Path(sys.executable)
+    if getattr(sys, "frozen", False):
+        # A non-debug exe maps to itself.
+        candidate = exe.with_name(exe.stem.removesuffix(_DEBUG_SUFFIX) + exe.suffix)
+    else:
+        candidate = exe.with_name("pythonw.exe")
+    return str(candidate) if candidate.is_file() else sys.executable

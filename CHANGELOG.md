@@ -6,7 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-11
+
+The settings window, made to look like it belongs on a 2026 desktop, and a
+clean way to open it: no console window, no UAC prompt, never elevated.
+
+### Changed
+- **The settings window is rebuilt on `customtkinter`** (as the PRD originally
+  specified). The plain-`tkinter` version looked like a 1990s dialog: square
+  Motif-style sliders, hard boxed frames, and — with no DPI awareness — a
+  blurry, bitmap-stretched window at 125/150 % display scaling. Now: rounded
+  "Backlight" / "Startup" cards, filled slider tracks that snap to whole
+  seconds and to the three brightness stops, a toggle switch, crisp text at
+  any scaling, and a dark title bar. Esc closes it. It opens centred on the
+  screen that has the pointer (it used to be centred *on* the pointer — from
+  the tray, half the window ended up under the taskbar). A config that can't
+  be loaded, or a save that fails, now shows a message box instead of doing
+  nothing; a hand-set timeout the slider can't show (e.g. 300 s) is left
+  alone on Save unless you change it. The title bar and border are dark — in
+  the window's own navy on Windows 11 — and show the app's icon instead of
+  Tk's feather; the caption has only a Close button. New dependency:
+  `customtkinter` (settings process only; bundled with `--collect-data`).
+
 ### Fixed
+- `timeout = inf` / `nan` (TOML allows both; `1e999` parses to inf) is now
+  rejected like any other invalid timeout — `inf` meant the light never went
+  off, `nan` that it never came on. So is an integer timeout too large for a
+  float, which used to raise past the live reload's error handling and stop
+  the worker thread. A settings window that fails to open now
+  says so in a message box instead of silently doing nothing, and clicking
+  Settings again restores the open window if it was minimized.
+- A relative `--config` now means the same file in every process: the
+  elevated re-launch keeps the caller's working directory (it used to start in
+  `System32`), the path is made absolute up front, and the settings window
+  starts in the daemon's working directory. The logon task now runs at normal priority instead of Task
+  Scheduler's below-normal default. `--install-task` / `--uninstall-task` / `--set` exit
+  1 with a clear message when not run as administrator, and an access-denied
+  task lookup is reported as a failure instead of "not installed".
+- Opening Settings no longer pops up a console window, and the released exe
+  no longer carries a `requireAdministrator` manifest. Settings (and the logon
+  task) now start through the console-less program — the windowed exe even
+  when the daemon is the debug build, `pythonw.exe` from source. Without the
+  manifest the exe self-elevates once at start like a source checkout does;
+  with it, opening Settings from the tray would have raised a UAC prompt every
+  time and run the window elevated (NFR-5).
 - Opening Settings from the elevated tray never opened the window: the
   original de-elevation mechanism (duplicate Explorer's token, then
   `CreateProcessWithTokenW`) consistently failed with `ERROR_ACCESS_DENIED`

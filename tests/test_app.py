@@ -116,6 +116,44 @@ def test_install_and_uninstall_task_are_mutually_exclusive():
         app._parse_args(["--install-task", "--uninstall-task"])
 
 
+@pytest.mark.parametrize("flag", ["--install-task", "--uninstall-task"])
+def test_task_subcommands_refuse_clearly_without_admin(monkeypatch, caplog, flag):
+    monkeypatch.setattr(app, "is_admin", lambda: False)
+    import asus_kbd_backlight.autostart as autostart
+
+    monkeypatch.setattr(
+        autostart, "reconcile", lambda **k: pytest.fail("no Task Scheduler call unelevated")
+    )
+    with caplog.at_level("ERROR"):
+        assert app.main([flag]) == 1
+    assert any("elevated prompt" in r.message for r in caplog.records)
+
+
+def test_a_relative_config_path_is_made_absolute(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    import asus_kbd_backlight.app_settings as app_settings
+
+    seen = {}
+    monkeypatch.setattr(app_settings, "run", lambda path: seen.update(path=path) or 0)
+    app.main(["--settings", "--config", "my.toml"])
+    assert seen["path"] == tmp_path / "my.toml"
+
+
+def test_set_refuses_clearly_without_admin(monkeypatch, caplog, tmp_path):
+    monkeypatch.setattr(app, "is_admin", lambda: False)
+    monkeypatch.setattr(
+        app, "get_backlight", lambda *a, **k: pytest.fail("WMI touched unelevated")
+    )
+    with caplog.at_level("ERROR"):
+        assert app.main(["--set", "1", "--config", str(tmp_path / "c.toml")]) == 1
+    assert any("elevated prompt" in r.message for r in caplog.records)
+
+
+def test_set_dry_run_still_works_without_admin(monkeypatch, tmp_path):
+    monkeypatch.setattr(app, "is_admin", lambda: False)
+    assert app.main(["--set", "1", "--dry-run", "--config", str(tmp_path / "c.toml")]) == 0
+
+
 @pytest.mark.parametrize(
     "argv,expected",
     [

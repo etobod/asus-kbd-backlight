@@ -178,8 +178,8 @@ As a user, I want the app to start automatically when I log in, on by default, s
 | R-4 | A BIOS/firmware update changes `Device_ID` or the level mapping | Medium | Identifier is configurable (FR-4). |
 | R-5 | Antivirus flags the global keyboard hook as a keylogger | Medium | NFR-3, open source, explicit disclosure in README. |
 | R-6 | Other ASUS models use a different mapping | Low | Scope limited explicitly (section 4); verified-model list in README. |
-| R-7 | A GUI toolkit bloats or breaks the PyInstaller bundle | Medium | `customtkinter` is pure Python (~1 MB) over stdlib `tkinter`; freezes with a documented `--collect-data customtkinter`. It lives only in the transient settings process — the daemon pulls in no GUI toolkit (tray is raw Win32 via pywin32, already a dependency). |
-| R-8 | `requireAdministrator` manifest blocks unelevated autostart (Startup folder, `HKCU\Run`) | Medium | Task Scheduler with *Run with highest privileges* is the supported autostart and already matches FR-5; document it, ship a helper to create the task. |
+| R-7 | A GUI toolkit bloats or breaks the PyInstaller bundle | Medium | `customtkinter` is pure Python (~1 MB) over stdlib `tkinter`; freezes with a documented `--collect-data customtkinter`. It lives only in the transient settings process — the daemon pulls in no GUI toolkit (tray is raw Win32 via pywin32, already a dependency). *History:* 0.2.0 shipped the plain-`tkinter` fallback to avoid the dependency; it looked dated and blurry at high DPI, so 0.2.1 went back to `customtkinter` as planned. |
+| R-8 | An admin-requiring daemon can't autostart silently from the Startup folder / `HKCU\Run` (it would prompt for UAC at every logon) | Medium | Task Scheduler with *Run with highest privileges* is the supported autostart and already matches FR-5; the daemon reconciles the task itself (FR-12). *(Originally framed around the `requireAdministrator` manifest, which 0.2.1 dropped in favour of runtime self-elevation; the constraint is the same.)* |
 | R-9 | A second event loop starves the low-level hook and trips `LowLevelHooksTimeout`, dropping keystrokes | High | One message loop for hook + tray (NFR-6); the settings window runs out of process. |
 
 ## 10. Open questions
@@ -247,7 +247,7 @@ Two processes:
 
 ### FR-7 — elevation
 
-- Built exe: PyInstaller `--uac-admin` embeds a `requestedExecutionLevel level="requireAdministrator"` manifest. Windows shows the prompt at launch; no in-process code.
+- Built exe: **no** `requireAdministrator` manifest (no PyInstaller `--uac-admin`) — it self-elevates at runtime exactly like `python -m` below. A manifest would elevate every launch of the exe, including the `--settings` child, which must stay unelevated (NFR-5); Explorer would also prompt for UAC each time Settings is opened. *(Changed in 0.2.1; 0.2.0 shipped the manifest.)*
 - `python -m` / unfrozen: in `main()`, if `not IsUserAnAdmin()` and the command is not `--settings` and `AKB_ELEVATED` is unset — `ShellExecuteW(None, "runas", sys.executable, "<argv>", None, SW_SHOWNORMAL)`, set `AKB_ELEVATED=1` in the child's environment to break any loop, then exit. On `ShellExecuteW` returning `SE_ERR_CANCELLED` (user said No), print a one-line message and exit non-zero.
 - The settings child is always spawned with `--settings --no-elevate`.
 
@@ -260,7 +260,7 @@ Two processes:
 
 ### FR-9 / FR-11 — settings + live apply
 
-- Tray "Settings" → `subprocess.Popen([exe_or_python, "--settings", "--no-elevate"])`. A named mutex (`AKB_SETTINGS_SINGLETON`) makes a second launch focus the first window instead of opening another.
+- Tray "Settings" → a child `[windowless exe_or_pythonw, "--settings", "--no-elevate"]`, launched **unelevated**: from the elevated daemon via a `.lnk` handed to Explorer (a plain `Popen` would inherit the admin token), from an unelevated run via `Popen`. A named mutex (`AKB_SETTINGS_SINGLETON`) makes a second launch focus the first window instead of opening another. *(As implemented in 0.2.1; see DESIGN.)*
 - **Toolkit:** `customtkinter` (on top of stdlib `tkinter`). It gives themable dark widgets, a real slider with `number_of_steps` for snapping, and direct `fg_color` / `hover_color` overrides for the palette below — none of which plain `ttk` does without a fight. Pure Python, ~1 MB; freezes with `--collect-data customtkinter`. Revisits R-7.
 - Dialog (`app_settings.py`, ~180 lines): `config.load()` →
   - **Stay on:** `CTkSlider(from_=1, to=60, number_of_steps=59)` bound to `timeout`, next to a `CTkEntry` that shows the value, accepts typing, and clamps on `<FocusOut>` / Return. Slider ↔ entry kept in sync via one shared `IntVar`.
@@ -297,7 +297,7 @@ Stretch: a `theme` key — `night` (default) or `system` (`customtkinter.set_app
 
 - `Config.autostart` (bool, default `True`). The **daemon** owns the Task Scheduler entry, because it is already elevated (NFR-5 keeps the settings window out of it).
 - On startup and on every live config reload, the daemon calls `autostart.reconcile(cfg.autostart)`:
-  - task name `asus-kbd-backlight`, action = the current executable path (`sys.executable` frozen, else `pythonw -m asus_kbd_backlight`), trigger = *At log on* of the current user, `RunLevel = HIGHEST` (no logon-time UAC prompt), settings: don't stop on battery, allow start on battery.
+  - task name `asus-kbd-backlight`, action = the console-less program (the windowed exe when frozen — even if the daemon is the debug build — else `pythonw -m asus_kbd_backlight`), trigger = *At log on* of the current user, `RunLevel = HIGHEST` (no logon-time UAC prompt), settings: don't stop on battery, allow start on battery.
   - `cfg.autostart and not task_exists()` → create it; `not cfg.autostart and task_exists()` → delete it; otherwise, if it exists, refresh the action path (survives moving the exe).
 - Implementation: Task Scheduler COM (`win32com.client.Dispatch("Schedule.Service")`) — no dependency beyond pywin32, no `schtasks.exe` string-quoting. A `--install-task` / `--uninstall-task` CLI wraps the same code for manual use and for `scripts/`.
 - First run, no config file: `config.load()` returns defaults with `autostart=True`, the daemon writes the file (so the checkbox state is visible) and registers the task once. Open question 10 covers whether to also show a one-time tray balloon.
@@ -305,13 +305,13 @@ Stretch: a `theme` key — `night` (default) or `system` (`customtkinter.set_app
 ### Packaging
 
 - `pyproject.toml`: add `tomli-w` (config write) and `customtkinter` (settings window). `tkinter` is stdlib. `pywin32` already present.
-- `scripts/build.ps1`: add `--icon assets/icon.ico`, `--uac-admin`, `--add-data "assets;assets"`, `--collect-data customtkinter`. The `noconsole` build becomes the single user artifact; `--debug` / `--settings` are flags on it. Keep a `--console` debug build without `--uac-admin` for troubleshooting.
+- `scripts/build.ps1`: add `--icon assets/icon.ico`, `--add-data "assets;assets"`, `--collect-data customtkinter`. The `noconsole` build becomes the single user artifact; `--debug` / `--settings` are flags on it. Keep a `--console` debug build for troubleshooting. Neither carries `--uac-admin` (see FR-7 above); child processes the daemon starts (Settings, the logon task) always use the windowed build.
 - New: `scripts/make-icon.ps1` (or a committed `assets/icon.ico`) — generate the multi-res `.ico` from `assets/icon.svg` (ImageMagick / Inkscape). Design brief: a single backlit keycap with a soft glow; the paused variant desaturated.
 - Autostart is handled in-process (FR-12); the `--install-task` / `--uninstall-task` CLI is what `scripts/` and power users call.
 
 ### Rollout order
 
-1. `assets/icon.ico` + `--icon` + `--uac-admin` — "double-click just works" (FR-7, FR-10 partial).
+1. `assets/icon.ico` + `--icon` + runtime self-elevation — "double-click just works" (FR-7, FR-10 partial).
 2. Tray window + menu + Pause / Resume / Quit on the existing loop (FR-8).
 3. `config.save` (+ `autostart` field) + `--settings` dialog in `customtkinter` — night palette, seconds slider+entry, 3-detent brightness slider, autostart checkbox, version footer — + file-watch live reload (FR-9, FR-11, FR-13).
 4. `autostart.reconcile` via Task Scheduler COM, wired to startup and config reload (FR-12).
