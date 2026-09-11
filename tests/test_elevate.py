@@ -7,6 +7,7 @@ mistake there is either a prompt loop or a silently unelevated daemon.
 
 import os
 import sys
+import types
 from argparse import Namespace
 
 import pytest
@@ -170,20 +171,21 @@ def test_spawn_settings_unelevated_uses_a_plain_popen(monkeypatch):
     monkeypatch.setattr(elevate, "is_admin", lambda: False)
     calls = []
     monkeypatch.setattr(elevate.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
-    # If it ever reached for runas / a lowered token that would be a bug.
+    # If it ever reached for runas / an Explorer handoff that would be a bug.
     monkeypatch.setattr(
         elevate, "_shell_execute_runas",
         lambda *a: pytest.fail("settings spawn must never elevate"),
     )
     monkeypatch.setattr(
-        elevate, "_shell_token", lambda: pytest.fail("no token dance when unelevated"),
+        elevate, "_spawn_via_explorer",
+        lambda *a: pytest.fail("no Explorer handoff needed when already unelevated"),
     )
     elevate.spawn_settings()
     assert len(calls) == 1
     assert "--settings" in calls[0] and elevate.NO_ELEVATE_FLAG in calls[0]
 
 
-def test_spawn_settings_elevated_lowers_the_token_and_never_uses_runas(monkeypatch):
+def test_spawn_settings_elevated_hands_off_to_explorer_never_runas(monkeypatch):
     monkeypatch.setattr(elevate, "is_admin", lambda: True)
     monkeypatch.setattr(
         elevate, "_shell_execute_runas",
@@ -194,14 +196,12 @@ def test_spawn_settings_elevated_lowers_the_token_and_never_uses_runas(monkeypat
         lambda *a, **k: pytest.fail("an elevated Popen would inherit the admin token"),
     )
     seen = {}
-    monkeypatch.setattr(elevate, "_shell_token", lambda: 0xABCD)
     monkeypatch.setattr(
-        elevate, "_spawn_with_token",
-        lambda token, exe, cmdline: seen.update(token=token, exe=exe, cmdline=cmdline),
+        elevate, "_spawn_via_explorer",
+        lambda exe, params: seen.update(executable=exe, params=params),
     )
     elevate.spawn_settings()
-    assert seen["token"] == 0xABCD
-    assert "--settings" in seen["cmdline"] and "--no-elevate" in seen["cmdline"]
+    assert "--settings" in seen["params"] and elevate.NO_ELEVATE_FLAG in seen["params"]
 
 
 def test_spawn_settings_passes_the_config_path(monkeypatch):
@@ -213,13 +213,97 @@ def test_spawn_settings_passes_the_config_path(monkeypatch):
     assert calls[0][calls[0].index("--config") + 1] == r"C:\somewhere\config.toml"
 
 
-def test_spawn_settings_elevated_survives_a_token_failure(monkeypatch, caplog):
+def test_spawn_settings_elevated_survives_an_explorer_handoff_failure(monkeypatch, caplog):
     monkeypatch.setattr(elevate, "is_admin", lambda: True)
 
-    def _boom():
-        raise OSError("no shell window")
+    def _boom(exe, params):
+        raise OSError("could not create the settings shortcut")
 
-    monkeypatch.setattr(elevate, "_shell_token", _boom)
+    monkeypatch.setattr(elevate, "_spawn_via_explorer", _boom)
     with caplog.at_level("ERROR"):
         elevate.spawn_settings()  # must not raise
     assert any("settings window" in r.message for r in caplog.records)
+
+
+class _FakeShortcut:
+    def __init__(self):
+        self.TargetPath = None
+        self.Arguments = None
+        self.WorkingDirectory = None
+        self.WindowStyle = None
+        self.saved = False
+
+    def Save(self):
+        self.saved = True
+
+
+class _FakeWSH:
+    def __init__(self):
+        self.created = []
+
+    def CreateShortCut(self, path):
+        sc = _FakeShortcut()
+        self.created.append((path, sc))
+        return sc
+
+
+def _install_fake_win32com(monkeypatch, dispatch):
+    """Stub sys.modules so ``import win32com.client`` inside
+    :func:`elevate._spawn_via_explorer` resolves to a fake, no real COM/shell
+    touched. Both ``win32com`` and ``win32com.client`` are patched, because
+    ``import a.b`` binds the *parent* name and reads its ``.b`` attribute."""
+    fake_client = types.SimpleNamespace(Dispatch=dispatch)
+    fake_win32com = types.SimpleNamespace(client=fake_client)
+    monkeypatch.setitem(sys.modules, "win32com", fake_win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", fake_client)
+
+
+@pytest.fixture
+def fake_win32com(monkeypatch):
+    wsh = _FakeWSH()
+    _install_fake_win32com(monkeypatch, lambda name: wsh)
+    return wsh
+
+
+def test_spawn_via_explorer_writes_a_shortcut_and_hands_it_to_explorer(monkeypatch, fake_win32com):
+    calls = []
+    monkeypatch.setattr(elevate.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(elevate.os, "remove", lambda path: None)  # never touch the real temp dir
+
+    elevate._spawn_via_explorer(
+        r"C:\python\python.exe", ["-m", "asus_kbd_backlight", "--settings", "--no-elevate"]
+    )
+
+    assert len(fake_win32com.created) == 1
+    lnk_path, shortcut = fake_win32com.created[0]
+    assert lnk_path.endswith(".lnk")
+    assert shortcut.saved is True
+    assert shortcut.TargetPath == r"C:\python\python.exe"
+    assert "--settings" in shortcut.Arguments and "--no-elevate" in shortcut.Arguments
+
+    # Explorer, not us, does the actual launch - the "elevated Popen" trap
+    # NFR-5 exists for is only reachable via CreateProcess-family calls, and
+    # explorer.exe (already running, medium integrity) is what we hand off to.
+    assert calls == [["explorer.exe", lnk_path]]
+
+
+def test_spawn_via_explorer_wraps_a_com_failure_as_oserror(monkeypatch):
+    def _boom(name):
+        raise RuntimeError("pywintypes.com_error stand-in")
+
+    _install_fake_win32com(monkeypatch, _boom)
+    with pytest.raises(OSError, match="settings shortcut"):
+        elevate._spawn_via_explorer("C:\\a.exe", ["--settings"])
+
+
+def test_spawn_via_explorer_cleans_up_the_shortcut_on_a_launch_failure(monkeypatch, fake_win32com):
+    removed = []
+    monkeypatch.setattr(elevate.os, "remove", lambda path: removed.append(path))
+    monkeypatch.setattr(
+        elevate.subprocess, "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("explorer.exe not found")),
+    )
+
+    with pytest.raises(OSError):
+        elevate._spawn_via_explorer("C:\\a.exe", ["--settings"])
+    assert len(removed) == 1

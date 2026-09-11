@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Opening Settings from the elevated tray never opened the window: the
+  original de-elevation mechanism (duplicate Explorer's token, then
+  `CreateProcessWithTokenW`) consistently failed with `ERROR_ACCESS_DENIED`
+  even after every privilege the Win32 API documents was explicitly enabled
+  (`SeDebugPrivilege` to open the shell's token across UAC's split-token
+  boundary, `SeImpersonatePrivilege` for the call itself) — and that pattern
+  is also a well-known "token theft" signature some security software blocks
+  outright. Replaced with the Microsoft-documented alternative: write a
+  `.lnk` shortcut carrying the real command line, then hand it to
+  `explorer.exe`, which is already running unelevated and does the actual
+  launch itself. No token duplication, no special privileges — the
+  `_shell_token` / `_enable_privilege` / `_spawn_with_token` machinery (and
+  the `ctypes.get_last_error()`/`use_last_error=True` and handle-overflow bugs
+  found while diagnosing it) is gone with it.
+
 ## [0.2.0] - 2026-09-11
 
 The v0.2 tray UI: the program elevates itself, lives in the system tray with a

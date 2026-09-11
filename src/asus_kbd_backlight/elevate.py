@@ -174,8 +174,7 @@ def relaunch_elevated(argv: Sequence[str]) -> int:
 # parent hands the child the *same* admin token - so the settings window would
 # run elevated and write ``config.toml`` with an admin-owned ACL. NFR-5 says the
 # window and every config write stay unelevated. When we are already admin we
-# therefore launch it with a token borrowed from the shell (Explorer runs at
-# medium integrity), via ``CreateProcessWithTokenW``; when we are not elevated a
+# therefore hand the launch to Explorer (below); when we are not elevated a
 # plain ``Popen`` is already correct.
 
 
@@ -184,125 +183,81 @@ def settings_command(argv: Sequence[str]) -> tuple[str, list[str]]:
     return _command(argv)
 
 
-def _shell_token() -> int:
-    """A primary token duplicated from the running shell (medium integrity).
+def _spawn_via_explorer(executable: str, params: list[str]) -> None:
+    """Launch ``executable params...`` at Explorer's (medium) integrity.
 
-    Raises ``OSError`` if the shell is not reachable or the duplication fails.
-    Kept behind its own function so :func:`spawn_settings` is testable without
-    touching Win32.
+    A first attempt duplicated the shell's token and used
+    ``CreateProcessWithTokenW`` directly - the textbook Win32 mechanism, but
+    also a well-known "token theft" pattern security software watches for, and
+    it kept failing with ``ERROR_ACCESS_DENIED`` even with every privilege the
+    API documents enabled (see git history / CHANGELOG). This is the
+    Microsoft-documented alternative (Aaron Margosis's "ShellExecute from an
+    explorer window" pattern): write a ``.lnk`` shortcut carrying the real
+    command line, then ask **Explorer itself** to open it
+    (``explorer.exe <path-to-lnk>``). Explorer is single-instance and already
+    running at medium integrity, so the *existing* Explorer process does the
+    actual launch - no token duplication, no elevated privilege needed here at
+    all.
+
+    Raises ``OSError`` if the shortcut can't be created or Explorer can't be
+    asked to open it (``pywintypes.com_error`` from the COM calls is wrapped
+    into ``OSError`` too, so callers only need to catch one type).
     """
-    from ctypes import wintypes
+    import tempfile
+    import uuid
 
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    advapi32 = ctypes.windll.advapi32
+    from asus_kbd_backlight.backlight import _co_initialize
 
-    # HANDLE-returning calls need an explicit restype or the 64-bit value is
-    # truncated to c_int - the same trap DESIGN.md documents for
-    # SetWindowsHookExW / ShellExecuteW. GetShellWindow returns an HWND, which
-    # Microsoft guarantees is 32-bit-safe even cross-bitness, but OpenProcess's
-    # HANDLE carries no such guarantee.
-    user32.GetShellWindow.restype = wintypes.HWND
-    kernel32.OpenProcess.restype = wintypes.HANDLE
+    _co_initialize()  # win32com needs COM initialised on this (spawn) thread
+    import win32com.client
 
-    hwnd = user32.GetShellWindow()
-    if not hwnd:
-        raise OSError("no shell window; cannot lower integrity")
-    pid = wintypes.DWORD()
-    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-
-    PROCESS_QUERY_INFORMATION = 0x0400
-    TOKEN_DUPLICATE = 0x0002
-    TOKEN_ASSIGN_PRIMARY = 0x0001
-    TOKEN_QUERY = 0x0008
-    SECURITY_IMPERSONATION = 2
-    TOKEN_PRIMARY = 1
-
-    hproc = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid.value)
-    if not hproc:
-        raise ctypes.WinError(ctypes.get_last_error())
+    lnk_path = os.path.join(tempfile.gettempdir(), f"akb-settings-{uuid.uuid4().hex}.lnk")
     try:
-        htok = wintypes.HANDLE()
-        if not advapi32.OpenProcessToken(hproc, TOKEN_DUPLICATE, ctypes.byref(htok)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            primary = wintypes.HANDLE()
-            access = TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY
-            if not advapi32.DuplicateTokenEx(
-                htok, access, None, SECURITY_IMPERSONATION, TOKEN_PRIMARY,
-                ctypes.byref(primary),
-            ):
-                raise ctypes.WinError(ctypes.get_last_error())
-            return primary.value
-        finally:
-            kernel32.CloseHandle(htok)
-    finally:
-        kernel32.CloseHandle(hproc)
+        wsh = win32com.client.Dispatch("WScript.Shell")
+        shortcut = wsh.CreateShortCut(lnk_path)
+        shortcut.TargetPath = executable
+        shortcut.Arguments = subprocess.list2cmdline(params)
+        workdir = os.path.dirname(executable)
+        if workdir:
+            shortcut.WorkingDirectory = workdir
+        shortcut.WindowStyle = SW_SHOWNORMAL
+        shortcut.Save()
+    except Exception as exc:  # noqa: BLE001 - pywintypes.com_error isn't an OSError
+        raise OSError(f"could not create the settings shortcut: {exc}") from exc
 
-
-def _spawn_with_token(token: int, executable: str, command_line: str) -> None:
-    """``CreateProcessWithTokenW`` on ``token``; raises ``OSError`` on failure."""
-    from ctypes import wintypes
-
-    kernel32 = ctypes.windll.kernel32
-    advapi32 = ctypes.windll.advapi32
-
-    class _STARTUPINFO(ctypes.Structure):
-        _fields_ = [
-            ("cb", wintypes.DWORD),
-            ("lpReserved", wintypes.LPWSTR),
-            ("lpDesktop", wintypes.LPWSTR),
-            ("lpTitle", wintypes.LPWSTR),
-            ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
-            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
-            ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
-            ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
-            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
-            ("lpReserved2", ctypes.c_void_p),
-            ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE),
-            ("hStdError", wintypes.HANDLE),
-        ]
-
-    class _PROCESS_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
-            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
-        ]
-
-    si = _STARTUPINFO()
-    si.cb = ctypes.sizeof(si)
-    pi = _PROCESS_INFORMATION()
-    # dwLogonFlags = 0: do NOT pass LOGON_WITH_PROFILE. Loading the profile hive
-    # can take hundreds of ms, and this runs (off-thread, but still) near the
-    # message pump; the settings window only needs %APPDATA%, already in the
-    # environment. The CreateProcess*W family may write into lpCommandLine, so
-    # hand it a mutable buffer, never the interned str.
-    CREATE_UNICODE_ENVIRONMENT = 0x00000400
-    cmd_buf = ctypes.create_unicode_buffer(command_line)
     try:
-        ok = advapi32.CreateProcessWithTokenW(
-            wintypes.HANDLE(token), 0, executable, cmd_buf,
-            CREATE_UNICODE_ENVIRONMENT, None, None, ctypes.byref(si), ctypes.byref(pi),
-        )
-        if not ok:
-            raise ctypes.WinError(ctypes.get_last_error())
-        kernel32.CloseHandle(pi.hProcess)
-        kernel32.CloseHandle(pi.hThread)
-    finally:
-        kernel32.CloseHandle(token)
+        subprocess.Popen(["explorer.exe", lnk_path], close_fds=True)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(lnk_path)
+        raise
+    else:
+        # Explorer reads the .lnk asynchronously (it hands the request to the
+        # already-running instance and returns); give it a few seconds before
+        # cleaning up rather than racing it. Best-effort - a leftover .lnk in
+        # %TEMP% is harmless.
+        import threading
+        import time
+
+        def _cleanup() -> None:
+            time.sleep(10)
+            with contextlib.suppress(OSError):
+                os.remove(lnk_path)
+
+        threading.Thread(target=_cleanup, name="settings-lnk-cleanup", daemon=True).start()
 
 
 def spawn_settings(config_path: object | None = None) -> None:
     """Open the settings window as an **unelevated** child process (NFR-5).
 
-    From an elevated daemon this borrows the shell's medium-integrity token; run
-    unelevated (a dev running ``--no-elevate``) a plain ``Popen`` is already
-    right. Never uses the ``runas`` verb - that would *raise* the integrity, the
-    opposite of what NFR-5 needs.
+    From an elevated daemon this hands the launch to Explorer (medium
+    integrity); run unelevated (a dev running ``--no-elevate``) a plain
+    ``Popen`` is already right. Never uses the ``runas`` verb - that would
+    *raise* the integrity, the opposite of what NFR-5 needs.
 
-    Token duplication + process creation can take a beat; the caller invokes
-    this off the message-pump thread (see ``app._launch_settings``) so a slow
-    spawn can never trip ``LowLevelHooksTimeout`` and drop keystrokes.
+    Creating the shortcut + spawning can take a beat; the caller invokes this
+    off the message-pump thread (see ``app._launch_settings``) so a slow spawn
+    can never trip ``LowLevelHooksTimeout`` and drop keystrokes.
     """
     argv: list[str] = [SETTINGS_FLAG, NO_ELEVATE_FLAG]
     if config_path is not None:
@@ -313,9 +268,7 @@ def spawn_settings(config_path: object | None = None) -> None:
         subprocess.Popen([executable, *params], close_fds=True)
         return
 
-    command_line = subprocess.list2cmdline([executable, *params])
     try:
-        token = _shell_token()
-        _spawn_with_token(token, executable, command_line)
+        _spawn_via_explorer(executable, params)
     except OSError as exc:
         log.error("could not open the settings window unelevated: %s", exc)

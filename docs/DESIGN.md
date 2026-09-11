@@ -293,12 +293,31 @@ window itself is manual per TEST-PLAN.
 `subprocess.Popen` would hand the child the admin token and the window would
 write `config.toml` with an admin-owned ACL. `elevate.spawn_settings` therefore
 branches on `is_admin()`: unelevated (a dev with `--no-elevate`) a plain `Popen`
-is already right; elevated it borrows the shell's medium-integrity token
-(`GetShellWindow` → `OpenProcessToken` → `DuplicateTokenEx` → primary token) and
-starts the child with `CreateProcessWithTokenW`. It never uses the `runas` verb
-— that *raises* integrity, the opposite of what NFR-5 wants — and a failure to
-lower the token is logged, not raised. A named mutex `AKB_SETTINGS_SINGLETON`
-makes a second launch focus the open window instead of opening another.
+is already right; elevated it hands the launch to Explorer (below). It never
+uses the `runas` verb — that *raises* integrity, the opposite of what NFR-5
+wants. A named mutex `AKB_SETTINGS_SINGLETON` (in `app_settings.py`) makes a
+second launch focus the open window instead of opening another.
+
+**Getting Explorer to do the launch, not a duplicated token.** The first
+implementation duplicated Explorer's (medium-integrity) token and called
+`CreateProcessWithTokenW` directly — the textbook Win32 mechanism for this.
+On real hardware it consistently failed with `ERROR_ACCESS_DENIED`, even after
+explicitly enabling every privilege the API documents: `SeDebugPrivilege`
+(needed just to *open* the shell's token — UAC's split-token design makes the
+daemon's elevated token and Explorer's a different security context even for
+the same signed-in user) and `SeImpersonatePrivilege` (needed for the call
+itself). It never worked, and the pattern — steal a shell's token, spawn a
+process with it — is also a well-known technique security software watches
+for. It was replaced with the Microsoft-documented alternative (Aaron
+Margosis's "ShellExecute from an explorer window"): `_spawn_via_explorer`
+writes a `.lnk` shortcut (`win32com.client`'s `WScript.Shell.CreateShortCut`)
+carrying the real target/arguments, then runs `explorer.exe <path-to-lnk>`.
+Explorer is single-instance and already running at medium integrity, so the
+*existing* Explorer process reads the shortcut and does the actual launch —
+no token duplication, no elevated privilege of any kind needed here. The
+`.lnk` is cleaned up a few seconds later (best-effort; a leftover file in
+`%TEMP%` is harmless) since Explorer reads it asynchronously and deleting it
+immediately would race that read.
 
 ### Start with Windows is a scheduler task the daemon reconciles (FR-12, R-8)
 
