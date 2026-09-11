@@ -4,6 +4,11 @@ Keyboard-only idle timeout for the keyboard backlight on ASUS laptops.
 
 The backlight turns on when you type and turns off a few seconds after you stop. Moving the mouse or touching the touchpad does **not** wake it.
 
+- Runs in the **system tray** — right-click for Settings / Pause / Quit; the tooltip shows the current timeout.
+- **Elevates itself** on start (one UAC prompt); declining exits cleanly.
+- A dark **settings window** for the timeout and brightness, applied live — no restart, and hand-edits to `config.toml` are picked up the same way.
+- **Starts with Windows** by default, via a Task Scheduler entry it manages itself (no logon UAC prompt).
+
 ---
 
 > # ⚠️ REQUIRED: TURN OFF "TURN OFF BACKLIGHT AFTER …" IN ARMOURY CRATE
@@ -62,7 +67,20 @@ Your antivirus may still flag the hook. That is a reasonable heuristic doing its
 pip install asus-kbd-backlight
 ```
 
-Run with `pythonw.exe` to avoid a console window. For autostart, add a task in Task Scheduler with *Run with highest privileges* checked.
+The program needs Administrator rights and asks for them itself: start it normally and answer the single UAC prompt. The released `asus-kbd-backlight.exe` carries a `requireAdministrator` manifest, so Windows prompts before it starts; from a source checkout `python -m asus_kbd_backlight` re-launches itself elevated once. Declining the prompt exits cleanly rather than leaving a half-working hook.
+
+`--dry-run` runs the logic against a no-op backlight and never prompts.
+
+### Start with Windows
+
+On by default. The app keeps a Task Scheduler entry (`asus-kbd-backlight`, *Run
+with highest privileges*, *At log on*) that starts it elevated at logon with no
+UAC prompt, and the elevated daemon creates or removes that entry to match the
+**Start with Windows** checkbox in the settings window (config key `autostart`).
+Untick it and Save, or run `asus-kbd-backlight --uninstall-task`, to stop it
+launching at logon; `--install-task` puts it back. You never need to touch Task
+Scheduler by hand. (Running with an explicit `--config` does not manage the
+task — the scheduled entry always uses the default config location.)
 
 ## Configuration
 
@@ -70,7 +88,25 @@ Run with `pythonw.exe` to avoid a console window. For autostart, add a task in T
 |---|---|---|
 | `timeout` | `3.0` | Seconds of keyboard idleness before turning off |
 | `on_level` | `1` | Brightness while typing: 1 = 33%, 2 = 66%, 3 = 100% |
+| `autostart` | `true` | Start elevated at logon via a Task Scheduler entry the app manages |
 | `device_id` | `0x00050021` | ASUS ACPI endpoint for backlight brightness |
+
+Edits are applied live — save the file (or use the settings window) and the
+running daemon picks the change up within about a second, no restart.
+
+### Settings window
+
+Right-click the tray icon → **Settings** (or run `asus-kbd-backlight --settings`)
+for a small dark window: a "stay on after typing" slider (1–60 s, with a
+typeable box beside it), a brightness slider with three stops (33 / 66 / 100 %),
+a **Start with Windows** checkbox, and the version. **Save** writes
+`config.toml` and the change takes effect within a second; **Cancel** or closing
+the window leaves everything running. `device_id` has no control here — it is a
+hardware value, edited in the file on the rare occasion it is needed.
+
+The window runs **without** Administrator rights even though the daemon is
+elevated, so the config file keeps a normal owner. Opening Settings a second
+time just focuses the window already open.
 
 ## Verified models
 

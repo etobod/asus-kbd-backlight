@@ -10,43 +10,48 @@ hardware, elevation, a message loop, or the GUI).
 |---|---|---|---|
 | FR-1 | Backlight forced off at startup, independent of prior state | A | ✅ `test_controller.test_startup_forces_off` |
 | FR-2 | Keyboard-only wake; mouse/touchpad ignored | A (hook is keyboard-only by construction) + M (real pointer input) | ⚠️ partial — `test_hook` proves the callback is keyboard-only; no test injects pointer events |
-| FR-3 | Off after the configured idle interval; steady while typing | A | ✅ `test_controller.test_tick_tracks_idle_timeout` — ⚠️ no "continuous typing = no flicker" case |
-| FR-4 | timeout / on_level / device_id configurable outside code | A | ✅ `test_config` (11) |
-| FR-5 | No console; documented elevated autostart | M | ⛔ manual only |
-| FR-6 | Clean shutdown: hook removed, control returned | A + M | ✅ `test_run_turns_backlight_off_on_exit`, `test_stop_warns_when_worker_hangs` |
+| FR-3 | Off after the configured idle interval; steady while typing | A | ✅ `test_controller.test_tick_tracks_idle_timeout`, `test_continuous_typing_keeps_it_steady_no_flicker` (0.5 s of keystrokes → one ON, no churn) |
+| FR-4 | timeout / on_level / device_id / autostart configurable outside code | A | ✅ `test_config` (29) — load defaults/overrides/validation, `device_id` range (`≤0`, `>0xFFFFFFFF`), `autostart` default+bool-guard, `save()` round-trip, `load_bytes` |
+| FR-5 | No console; documented elevated autostart | A (windowed build has no console; `--settings` child never elevates) + M | ⚠️ partial — the windowed PyInstaller target is `--noconsole`; autostart is FR-12. M: confirm no console window at logon |
+| FR-6 | Clean shutdown: hook removed, control returned | A + M | ✅ `test_run_turns_backlight_off_on_exit`, `test_stop_warns_when_worker_hangs`. Known gap (v0.2, DESIGN "Known limitation"): a real Windows logoff via `WM_QUERYENDSESSION` is time-boxed and can kill the process before `Controller.stop()`'s worker join + trailing `set_level(OFF)` complete — `WM_CLOSE` / Ctrl+C are not time-boxed and unaffected. M: verify at a real logoff |
 | NFR-1 | Hook does no blocking work | A (structural) | ⚠️ implied by `test_hook` (callback is trivial); not directly asserted |
 | NFR-2 | Control call only on state change | A | ✅ `test_controller.test_apply_only_on_transition` |
 | NFR-3 | Hook records timestamp only, never key content | A (structural) | ✅ `test_hook.test_callback_records_timestamp_only` |
 | NFR-4 | Hardware failure: no undefined state, no crash-without-cleanup | A | ✅ `test_apply_swallows_non_backlighterror`, `test_apply_retry_dedup_and_recovery`, `test_apply_backs_off_on_persistent_failure`, `test_backlight.test_wmibacklight_wraps_com_failure_and_leaves_cache_empty` |
 | — | `DEVS` Control_status = `0x80 \| level` (the enable-bit bug) | A | ✅ `test_backlight.test_encode_control_status_sets_bit7` (0→0x80 … 3→0x83) |
-| — | `--set` one-shot path | A | ⛔ not covered (`_bind` now wraps errors, so no raw traceback) |
+| — | `--set` one-shot path | A | ✅ `test_app` — `--set 2 --dry-run` sets the level once and returns 0 without the hook/worker/loop; a `BacklightError` → exit 1 |
 | — | `_coerce_device_id` hex / int / bare-hex / garbage | A | ✅ `test_config` — int, `0x`-hex, bare `"00050021"`, garbage→ValueError |
 
-## v0.2 — tray UI (not yet implemented)
+## v0.2 — tray UI
 
 | Req | Verifies | Kind | Status |
 |---|---|---|---|
-| FR-7 | One UAC prompt; decline = clean exit; `-m` self-relaunch once, no loop | A (relaunch guard via `AKB_ELEVATED`) + M (UAC) | ⛔ |
-| FR-8 | Tray icon, tooltip state, menu actions, double-click → Settings | M | ⛔ |
-| FR-9 | Two-group layout; seconds slider+entry sync & clamp; brightness 3 detents only; version shown | A (slider→on_level map, entry clamp) + M (visual) | ⛔ |
-| FR-10 | Icon embedded; running vs paused differ | M | ⛔ |
-| FR-11 | Save applies < 1 s, no restart, no dropped keys; hand-edit picked up | A (config mtime watch + swap under lock) | ⛔ |
-| FR-12 | `autostart` default true; daemon reconciles Task Scheduler entry; no prompt at logon | A (reconcile logic w/ mocked `Schedule.Service`) + M (actual logon) | ⛔ |
-| FR-13 | Night theme by default; no pure #FFF/#000; palette tokens applied | M (visual) | ⛔ |
-| NFR-5 | Settings window / config writes never elevate | A (settings entrypoint asserts no elevation call) | ⛔ |
-| NFR-6 | One message loop in the daemon; settings out of process | A (structural) + M | ⛔ |
-| NFR-7 | Tray lost (Explorer restart) → keeps working, re-adds icon | M | ⛔ |
-| NFR-8 | UI adds < 150 ms startup; idle CPU < 0.5% | M (measure) | ⛔ |
+| FR-7 | One UAC prompt; decline = clean exit; `-m` self-relaunch once, no loop | A (decision table + child command line) + M (the prompt itself) | ✅ `test_elevate` (24) — admin/env-guard/`--settings`/`--no-elevate`/`--dry-run`/`--set`/`--install-task`/`--uninstall-task` opt-outs, `--no-elevate` appended exactly once, `AKB_ELEVATED=1` set in this process's environment before the relaunch (best-effort backstop, not guaranteed across `runas` — `--no-elevate` on the command line is the real guard), one `ShellExecuteW`, decline → non-zero, `os.environ` isolated per test. M: the real UAC dialog |
+| FR-8 | Tray icon, tooltip state, menu actions, double-click → Settings | A (dispatch table, tooltip, `TaskbarCreated` re-add, pause behaviour, Win32 lifecycle) + M (the icon, menu pixels) | ⚠️ partial — `test_tray` (18): menu id → callback, `WM_COMMAND`/left-click routing, unknown id ignored, raising handler swallowed, raising `on_quit` still posts `WM_QUIT`, `TaskbarCreated` → `NIM_ADD`, `WM_CLOSE`/`WM_QUERYENDSESSION` → quit + `WM_QUIT`, tooltip tracks pause, a `status_provider` supplies the tooltip and falls back on error, a `WM_TIMER` pushes `NIM_MODIFY` only when the text changed (live timeout) and the timer handler's `tip` is reused by `_notify` rather than recomputed, `NIM_MODIFY` on toggle, `DestroyIcon` frees the icon only on a genuine paused-state change and is skipped for a tooltip-only update, `remove()` is re-entrant via `WM_DESTROY` (one `NIM_DELETE`). `test_controller`: `pause()` only sets the flag and the worker's next `tick()` turns the light off (COM stays on the worker thread), a raced `_apply(on=True)` after `pause()` never turns on, a paused tick retries the off after a WMI back-off, Resume restores, `toggle_pause` reports state. M: the visible icon, hover tooltip, right-click menu, double-click, and that Pause greys the icon and stops the backlight on real hardware within a tick |
+| FR-9 | Two-group layout; seconds slider+entry sync & clamp; brightness 3 detents only; version shown | A (clamp, detent↔level map, `build_config`) + M (visual layout, slider snap, singleton focus) | ⚠️ partial — `test_app_settings` (34): `clamp_timeout` (`600→60`, `0→1`, `3.6→4`, junk→fallback), `index_to_level`/`level_to_index` round-trip and range-clamp, `build_config` writes the shown values and carries `device_id` over, `run()` focuses an existing window instead of building a second. M: the two-group dark layout, the slider actually snapping, the version footer, singleton focus |
+| — NFR-5 spawn | Settings child is launched **de-elevated** from the elevated daemon | A (`spawn_settings` branch) + M (Task Manager → Elevated = No) | ✅ `test_elevate`: unelevated → plain `Popen` and never `runas`; elevated → borrows a lowered token via `_shell_token`/`_spawn_with_token`, never `Popen`, never `runas`; `--config` propagated; a token failure is logged not raised |
+| FR-10 | Icon embedded; running vs paused differ | A (assets exist + valid multi-res ICO; the paused-variant selection) + M (visual, tray) | ⚠️ partial — `test_paths` proves both `.ico` files are present and well-formed and that `asset()` degrades to `None` off-`_MEIPASS`; `test_tray` covers `_load_icon` picking `icon-paused.ico` when `_paused` and `set_paused` pushing a `NIM_MODIFY`. M: that the two icons are visibly different in the tray, and the embed in the frozen exe. Known gap: a bare `pip install` ships no `assets/`, so a non-frozen install falls back to the default icon |
+| FR-11 | Save applies < 1 s, no restart, no dropped keys; hand-edit picked up | A (content watch + swap under lock; CLI-override re-apply; byte-parse) + M (no dropped keys under load) | ✅ `test_config`: atomic `save()` leaves no `*.tmp`, overwrites in place, rejects invalid before writing; `load_bytes` parses/validates and rejects bad TOML / non-UTF-8; `load()` of a missing file still yields defaults. `test_controller`: a content change swaps `_cfg` within one poll with **no** `set_level()` call, a same-length write is still caught (bytes, not mtime/size), the reload parses the bytes it read so a delete-and-recreate mid-poll can't reset to defaults, poll runs every 20th tick, malformed reload keeps the old config and logs once then recovers, `device_id` retargets the backend and clears `_is_on`, a `--timeout` override is re-applied on top of a reload while a hand-edit to the other keys still lands. M: "no dropped keystrokes while saving" — needs a real hook + typing |
+| FR-12 | `autostart` default true; daemon reconciles Task Scheduler entry; no prompt at logon | A (reconcile logic vs a fake `Schedule.Service`; CLI wiring) + M (real registration, actual logon, no UAC) | ⚠️ partial — `test_autostart` (10): `reconcile` creates when enabled+absent, re-registers (self-heal) when enabled+present, deletes when disabled+present, no-ops when disabled+absent, swallows a COM failure and returns `False`; `task_exists` reports presence; `action_target` is `pythonw -m …` from source and the exe when frozen; `_populate` sets `RunLevel = HIGHEST` + a logon trigger. `test_app`: `--install-task` / `--uninstall-task` (and `--settings`, and `--set`) call `reconcile`/route correctly and never open the daemon log file (`_is_one_shot` — one predicate all four one-off sub-commands share, so a future one can't silently miss the isolation the way `--set` initially did); `_manages_autostart` is off for `--dry-run`, for an explicit `--config`, and for an unelevated (`admin=False`) run. `--set` is hermetic (`--config` to a `tmp_path`, never the real `%APPDATA%`). `test_elevate`: the task sub-commands never self-elevate. `test_config`: `autostart` default `true`, bool-guarded. M: the entry actually appearing in Task Scheduler and starting the daemon elevated at logon with no prompt |
+| FR-13 | Night theme by default; no pure #FFF/#000; palette tokens applied | A (palette tokens + contrast) + M (visual) | ⚠️ partial — `test_app_settings`: `PALETTE` carries all ten PRD §13 tokens, none is `#FFF`/`#000`, `contrast_ratio(surface, text)` is 7–14:1 (readable, not the 21:1 ceiling), muted text 3.5–7:1. M: that the tokens are actually applied to the widgets, the dark look in a dark room |
+| NFR-5 | Settings window / config writes never elevate | A (`spawn_settings` never elevates; `config.save` needs no admin) + M (Elevated column) | ✅ `test_elevate` spawn cases (see the "NFR-5 spawn" row); `config.save` is plain file I/O. M: open Settings from the elevated tray and confirm Task Manager shows Elevated = No, and the saved `config.toml` has a normal ACL |
+| NFR-6 | One message loop in the daemon; settings out of process | A (structural; settings is `spawn_settings` → child process) + M | ⚠️ partial — the tray adds no loop (its `WndProc` is dispatched by `hook.pump_messages`, `_install_tray` runs on that thread); the settings window is a separate process (`elevate.spawn_settings`), never an in-process `tkinter` loop. M: confirm no second loop under load |
+| NFR-7 | Tray lost (Explorer restart) → keeps working, re-adds icon | A (`_install_tray` → `None` on failure; `TaskbarCreated` → `NIM_ADD`) + M (real Explorer restart) | ⚠️ partial — `test_tray` pins the re-add and the headless fallback; the end-to-end Explorer kill is M |
+| NFR-8 | UI adds < 150 ms startup; idle CPU < 0.5% | M (measure) | ⛔ manual-only — a wall-clock / perf-counter measurement on the real daemon; the tray is one hidden window + a 2 s tooltip timer and the settings window is a separate process, so there is nothing on the hot path to assert in a unit test |
 
 ## Known gaps to close next (priority order)
 
 1. FR-2 — inject a real pointer event and assert `last_key` doesn't move (needs
    `SendInput` mouse events on the message-pump thread; likely M, not A).
-2. FR-3 — "continuous typing keeps it steady, no flicker" (drive `tick()` with a
-   sliding `last_key` and assert no off→on churn).
-3. `Config.validated` rejection cases (`device_id` ≤ 0 and > `0xFFFFFFFF`).
-4. `--set` one-shot path (`main(["--set", "2", "--dry-run"])` returns 0, sets level).
-5. v0.2 UI targets — all still ⛔ (feature not built).
+2. NFR-1 — assert directly (not just by implication) that the hook callback does
+   no blocking work.
+3. The v0.2 ⚠️-partial rows above: every one has its automatable logic pinned;
+   what remains is genuinely visual / elevation / real-Explorer / real-logon and
+   is called out per row.
+
+Closed 2026-09-11 (PLA-001): FR-3 continuous-typing no-flicker, `Config.validated`
+`device_id` range cases, `--set` one-shot path (+ `BacklightError` → exit 1), and
+the whole v0.2 tray-UI surface (FR-7…FR-13, NFR-5…NFR-7) moved from ⛔ to ✅ / ⚠️.
 
 Closed 2026-09-10 (main agent, from the `/loc-review` findings): NFR-3
 structural, `0x80|level` regression (`encode_control_status`), NFR-4

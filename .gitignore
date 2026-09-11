@@ -1,5 +1,6 @@
 # Local-only Claude Code guidance — keep on this machine, don't commit
 CLAUDE.md
+claude.ps1
 .claude/agents/
 .claude/skills/
 
